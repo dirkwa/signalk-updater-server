@@ -6,6 +6,7 @@ import { registerVersionRoutes } from './routes/versions.js';
 import { registerSwitchRoutes } from './routes/switch.js';
 import { registerSelfRoutes } from './routes/self.js';
 import { registerLogStreamRoutes } from './routes/logs-stream.js';
+import { registerHardwareRoutes } from './routes/hardware.js';
 
 export async function createServer(): Promise<FastifyInstance> {
   const app = Fastify({
@@ -21,6 +22,7 @@ export async function createServer(): Promise<FastifyInstance> {
   await registerSwitchRoutes(app);
   await registerSelfRoutes(app);
   await registerLogStreamRoutes(app);
+  await registerHardwareRoutes(app);
 
   return app;
 }
