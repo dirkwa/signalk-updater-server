@@ -15,7 +15,9 @@ const SIGNALK_CONTAINER = 'signalk-server';
 async function containerRunning(): Promise<boolean | null> {
   const rt = await resolveRuntime();
   if (!rt) return null;
-  const r = await safe(async () => (await rt.client.getContainer(SIGNALK_CONTAINER).inspect()) as ContainerInspect);
+  const r = await safe(
+    async () => (await rt.client.getContainer(SIGNALK_CONTAINER).inspect()) as ContainerInspect,
+  );
   if (!r.ok) return null;
   return Boolean(r.value.State?.Running);
 }
