@@ -96,8 +96,8 @@ async function doSwitch(input: SwitchInput): Promise<SwitchResult> {
   const start = Date.now();
   const newImage = `${SIGNALK_IMAGE}:${input.tag}`;
   const hooksRun: string[] = [];
-  let previousImage = '';
-  let snapshotPath = '';
+  let previousImage: string;
+  let snapshotPath: string;
 
   // 1. Pre-switch backup (best-effort)
   const backupResult: BackupResult = await preSwitchBackup(Boolean(input.skipBackup));
