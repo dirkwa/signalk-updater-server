@@ -407,14 +407,18 @@ main {
   font-size: 0.85rem;
 }
 
-.logs-toolbar input[type='number'] {
-  width: 5rem;
+.logs-toolbar input[type='number'],
+.logs-toolbar select {
   padding: 0.3rem 0.5rem;
   background: var(--bg-elev);
   border: 1px solid var(--border);
   color: var(--text);
   border-radius: var(--radius-sm);
   font-family: inherit;
+}
+
+.logs-toolbar input[type='number'] {
+  width: 5rem;
 }
 
 .logs {

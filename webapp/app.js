@@ -16,6 +16,10 @@ const ROUTES = {
   signalkStart: '/api/signalk/start',
   signalkStop: '/api/signalk/stop',
   signalkRestart: '/api/signalk/restart',
+  selfState: '/api/self/state',
+  selfUpdate: '/api/self/update',
+  logsStream: (name, tail) =>
+    `/api/containers/${encodeURIComponent(name)}/logs/stream?tail=${tail}`,
 };
 
 const CHANNEL_DESCRIPTIONS = {
@@ -265,19 +269,119 @@ async function refreshVersions(force = false) {
 }
 
 // ── Logs view ───────────────────────────────────────────
+let logsEventSource = null;
+
+function stopLogsStream() {
+  if (logsEventSource) {
+    logsEventSource.close();
+    logsEventSource = null;
+  }
+  const btn = document.getElementById('logs-stream');
+  btn.textContent = 'Stream';
+  btn.classList.remove('btn-primary');
+  btn.classList.add('btn-ghost');
+}
+
 async function refreshLogs() {
+  stopLogsStream();
   const lines = Number.parseInt(document.getElementById('logs-lines').value, 10) || 500;
+  const containerSel = document.getElementById('logs-container');
+  const name = containerSel ? containerSel.value : 'signalk-server';
   const out = document.getElementById('logs-output');
   out.textContent = 'Loading…';
   try {
-    const res = await fetch(`${ROUTES.signalkLogs}?lines=${lines}`, {
-      headers: state.token ? { Authorization: `Bearer ${state.token}` } : undefined,
-    });
-    const text = await res.text();
-    out.textContent = text || '(no log output)';
+    // The one-shot endpoint only ships signalk-server logs; for other
+    // containers we fall back to a single-shot read via the SSE
+    // endpoint cancelled after the first tail batch arrives. Keeps the
+    // refresh button useful for all three containers.
+    if (name === 'signalk-server') {
+      const res = await fetch(`${ROUTES.signalkLogs}?lines=${lines}`, {
+        headers: state.token ? { Authorization: `Bearer ${state.token}` } : undefined,
+      });
+      const text = await res.text();
+      out.textContent = text || '(no log output)';
+    } else {
+      out.textContent = '(use Stream to view logs for this container)';
+    }
     out.scrollTop = out.scrollHeight;
   } catch (err) {
     out.textContent = `Failed to read logs: ${err.message}`;
+  }
+}
+
+function toggleLogsStream() {
+  if (logsEventSource) {
+    stopLogsStream();
+    return;
+  }
+  const containerSel = document.getElementById('logs-container');
+  const name = containerSel ? containerSel.value : 'signalk-server';
+  const tail = Number.parseInt(document.getElementById('logs-lines').value, 10) || 500;
+  const out = document.getElementById('logs-output');
+  out.textContent = '';
+  // EventSource cannot set Authorization headers; the SSE endpoint
+  // is on the same origin as the SPA and only reachable from clients
+  // that already crossed the engine's PublishPort boundary.
+  const es = new EventSource(ROUTES.logsStream(name, tail));
+  logsEventSource = es;
+  es.onmessage = (ev) => {
+    out.textContent += ev.data + '\n';
+    out.scrollTop = out.scrollHeight;
+  };
+  es.addEventListener('end', () => {
+    out.textContent += '\n[stream ended]\n';
+    stopLogsStream();
+  });
+  es.addEventListener('error', () => {
+    out.textContent += '\n[stream error — disconnected]\n';
+    stopLogsStream();
+  });
+  const btn = document.getElementById('logs-stream');
+  btn.textContent = 'Stop streaming';
+  btn.classList.remove('btn-ghost');
+  btn.classList.add('btn-primary');
+}
+
+// ── Self-update ──────────────────────────────────────────
+async function refreshSelfState() {
+  try {
+    const s = await api(ROUTES.selfState);
+    const card = document.querySelector('[data-card=signalk-updater-server]');
+    const btn = card.querySelector('[data-action=self-update]');
+    const updateEl = card.querySelector('[data-field=updateAvailable]');
+    if (s.updateAvailable && s.availableTag) {
+      btn.disabled = false;
+      btn.dataset.selfUpdateTag = s.availableTag;
+      updateEl.textContent = `Available: ${s.availableTag}`;
+      updateEl.style.color = 'var(--warn)';
+    } else {
+      btn.disabled = true;
+      delete btn.dataset.selfUpdateTag;
+      updateEl.textContent = `Up to date (${s.currentTag})`;
+      updateEl.style.color = '';
+    }
+  } catch (err) {
+    // Soft-fail: leave the existing dashboard state intact.
+  }
+}
+
+async function doSelfUpdate() {
+  const card = document.querySelector('[data-card=signalk-updater-server]');
+  const btn = card.querySelector('[data-action=self-update]');
+  const tag = btn.dataset.selfUpdateTag;
+  if (!tag) return;
+  const r = await showConfirm({
+    title: `Self-update to ${tag}?`,
+    body: 'The updater will pull the new image, rewrite its own Quadlet, and restart. The browser will lose its connection for ~30s; refresh the page once it returns. signalk-server is not touched.',
+    okLabel: 'Update',
+  });
+  if (!r.confirmed) return;
+  try {
+    toast(`Self-updating to ${tag}…`, 'info', 30000);
+    await api(ROUTES.selfUpdate, { method: 'POST', body: JSON.stringify({ tag }) });
+    toast(`Self-update kicked off — wait for restart`, 'ok');
+  } catch (err) {
+    toast(`Self-update failed: ${err.message}`, 'err', 8000);
   }
 }
 
@@ -413,17 +517,28 @@ async function boot() {
 
   document.getElementById('versions-check').addEventListener('click', () => refreshVersions(true));
   document.getElementById('logs-refresh').addEventListener('click', () => refreshLogs());
+  document.getElementById('logs-stream').addEventListener('click', () => toggleLogsStream());
+  document.getElementById('logs-container').addEventListener('change', () => {
+    stopLogsStream();
+    refreshLogs();
+  });
   document.getElementById('refresh').addEventListener('click', () => {
     refreshDashboard();
     refreshRuntime();
+    refreshSelfState();
   });
+
+  // Self-update button on the updater card.
+  document
+    .querySelector('[data-card=signalk-updater-server] [data-action=self-update]')
+    .addEventListener('click', doSelfUpdate);
 
   // Open Doctor Console — port 3004 on the same host.
   const link = document.getElementById('open-doctor');
   link.href = `${window.location.protocol}//${window.location.hostname}:3004/`;
 
   await loadSession();
-  await Promise.all([refreshDashboard(), refreshRuntime()]);
+  await Promise.all([refreshDashboard(), refreshRuntime(), refreshSelfState()]);
 
   // Light polling: dashboard auto-refresh every 5s while tab is visible.
   setInterval(() => {
