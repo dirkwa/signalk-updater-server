@@ -7,10 +7,19 @@ describe('GET /api/health', () => {
     try {
       const res = await app.inject({ method: 'GET', url: '/api/health' });
       expect(res.statusCode).toBe(200);
-      const body = res.json() as { ok: boolean; runtime: string; uptimeSeconds: number };
+      const body = res.json() as {
+        ok: boolean;
+        runtime: string;
+        uptimeSeconds: number;
+        version: string;
+      };
       expect(typeof body.ok).toBe('boolean');
       expect(['podman', 'docker', 'unknown']).toContain(body.runtime);
       expect(typeof body.uptimeSeconds).toBe('number');
+      // Should resolve to the package.json semver in CI/dev. Allow
+      // 'unknown' as a graceful degradation for the case where the
+      // file can't be read.
+      expect(body.version).toMatch(/^(\d+\.\d+\.\d+|unknown)/);
     } finally {
       await app.close();
     }
