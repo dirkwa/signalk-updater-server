@@ -20,6 +20,7 @@ const ROUTES = {
   selfUpdate: '/api/self/update',
   logsStream: (name, tail) =>
     `/api/containers/${encodeURIComponent(name)}/logs/stream?tail=${tail}`,
+  logsOnce: (name, tail) => `/api/containers/${encodeURIComponent(name)}/logs?tail=${tail}`,
 };
 
 const CHANNEL_DESCRIPTIONS = {
@@ -269,7 +270,104 @@ async function refreshVersions(force = false) {
 }
 
 // ── Logs view ───────────────────────────────────────────
+//
+// Lifted from the signalk-container log-stream-broker pattern: the
+// engine fans a single dockerode follow-stream out to every SSE
+// subscriber, plus keeps a 500-line ring buffer per container so a
+// freshly attached client gets immediate context. The webapp side
+// just renders parsed lines.
 let logsEventSource = null;
+
+const LEVEL_RX_PINO = /"level":(\d+)/; // pino numeric level
+const PINO_LEVELS = { 10: 'trace', 20: 'debug', 30: 'info', 40: 'warn', 50: 'error', 60: 'fatal' };
+const LEVEL_RX_WORD = /\b(trace|debug|info|warn(?:ing)?|error|fatal)\b/i;
+const TS_RX_FRONT = /^(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?)\s*/;
+const TS_RX_PINO = /"time":(\d{10,13})/;
+
+function parseLogLine(raw) {
+  if (!raw) return { time: null, level: '', message: '', raw };
+  // pino JSON?
+  if (raw.startsWith('{')) {
+    try {
+      const obj = JSON.parse(raw);
+      const lvlNum = obj.level;
+      const level = PINO_LEVELS[lvlNum] || (typeof lvlNum === 'string' ? lvlNum : '');
+      const time = obj.time ? new Date(Number(obj.time)).toISOString() : null;
+      const msg = obj.msg || obj.message || '';
+      const extras = Object.entries(obj)
+        .filter(([k]) => !['level', 'time', 'msg', 'message', 'hostname', 'pid', 'v'].includes(k))
+        .map(([k, v]) => `${k}=${typeof v === 'object' ? JSON.stringify(v) : v}`)
+        .join(' ');
+      return { time, level, message: extras ? `${msg} ${extras}` : msg, raw };
+    } catch {
+      // Not actually JSON — fall through.
+    }
+  }
+  let line = raw;
+  let time = null;
+  const tsMatch = line.match(TS_RX_FRONT);
+  if (tsMatch) {
+    time = tsMatch[1];
+    line = line.slice(tsMatch[0].length);
+  } else {
+    const pinoTs = line.match(TS_RX_PINO);
+    if (pinoTs) time = new Date(Number(pinoTs[1])).toISOString();
+  }
+  let level = '';
+  const lvlMatch = line.match(LEVEL_RX_WORD);
+  if (lvlMatch) level = lvlMatch[1].toLowerCase().replace('warning', 'warn');
+  // pino numeric level inside an embedded JSON fragment.
+  if (!level) {
+    const num = line.match(LEVEL_RX_PINO);
+    if (num) level = PINO_LEVELS[Number(num[1])] || '';
+  }
+  return { time, level, message: line, raw };
+}
+
+function logLevelClass(level) {
+  if (level === 'error' || level === 'fatal') return 'log-err';
+  if (level === 'warn') return 'log-warn';
+  if (level === 'debug' || level === 'trace') return 'log-debug';
+  if (level === 'info') return 'log-info';
+  return 'log-plain';
+}
+
+function fmtLogTime(iso) {
+  if (!iso) return '';
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso.slice(11, 19);
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mm = String(d.getMinutes()).padStart(2, '0');
+    const ss = String(d.getSeconds()).padStart(2, '0');
+    return `${hh}:${mm}:${ss}`;
+  } catch {
+    return iso.slice(11, 19);
+  }
+}
+
+function isScrolledNearBottom(el) {
+  const slack = 30; // px — accommodates rounding and font baseline
+  return el.scrollTop + el.clientHeight >= el.scrollHeight - slack;
+}
+
+function appendLogLine(out, raw) {
+  const wasAtBottom = isScrolledNearBottom(out);
+  const parsed = parseLogLine(raw);
+  const row = document.createElement('div');
+  row.className = `log-row ${logLevelClass(parsed.level)}`;
+  const time = parsed.time ? fmtLogTime(parsed.time) : '';
+  row.innerHTML = `<span class="log-time">${escapeHtml(time)}</span><span class="log-level">${escapeHtml(parsed.level || '')}</span><span class="log-msg">${escapeHtml(parsed.message)}</span>`;
+  out.appendChild(row);
+  // Trim — keep latest ~2000 rows to avoid runaway DOM growth.
+  while (out.children.length > 2000) out.removeChild(out.firstChild);
+  if (wasAtBottom) out.scrollTop = out.scrollHeight;
+}
+
+function clearLogs() {
+  const out = document.getElementById('logs-output');
+  out.innerHTML = '';
+}
 
 function stopLogsStream() {
   if (logsEventSource) {
@@ -288,24 +386,34 @@ async function refreshLogs() {
   const containerSel = document.getElementById('logs-container');
   const name = containerSel ? containerSel.value : 'signalk-server';
   const out = document.getElementById('logs-output');
-  out.textContent = 'Loading…';
+  clearLogs();
+  const status = document.createElement('div');
+  status.className = 'log-row log-plain';
+  status.textContent = `Loading last ${lines} lines from ${name}…`;
+  out.appendChild(status);
   try {
-    // The one-shot endpoint only ships signalk-server logs; for other
-    // containers we fall back to a single-shot read via the SSE
-    // endpoint cancelled after the first tail batch arrives. Keeps the
-    // refresh button useful for all three containers.
-    if (name === 'signalk-server') {
-      const res = await fetch(`${ROUTES.signalkLogs}?lines=${lines}`, {
-        headers: state.token ? { Authorization: `Bearer ${state.token}` } : undefined,
-      });
-      const text = await res.text();
-      out.textContent = text || '(no log output)';
+    const res = await fetch(ROUTES.logsOnce(name, lines), {
+      headers: state.token ? { Authorization: `Bearer ${state.token}` } : undefined,
+    });
+    const text = await res.text();
+    clearLogs();
+    if (!text) {
+      const empty = document.createElement('div');
+      empty.className = 'log-row log-plain';
+      empty.textContent = `(no log output yet for ${name} — click Stream to subscribe)`;
+      out.appendChild(empty);
     } else {
-      out.textContent = '(use Stream to view logs for this container)';
+      for (const line of text.split('\n')) {
+        if (line) appendLogLine(out, line);
+      }
+      out.scrollTop = out.scrollHeight;
     }
-    out.scrollTop = out.scrollHeight;
   } catch (err) {
-    out.textContent = `Failed to read logs: ${err.message}`;
+    clearLogs();
+    const e = document.createElement('div');
+    e.className = 'log-row log-err';
+    e.textContent = `Failed to read logs: ${err.message}`;
+    out.appendChild(e);
   }
 }
 
@@ -318,22 +426,27 @@ function toggleLogsStream() {
   const name = containerSel ? containerSel.value : 'signalk-server';
   const tail = Number.parseInt(document.getElementById('logs-lines').value, 10) || 500;
   const out = document.getElementById('logs-output');
-  out.textContent = '';
+  clearLogs();
   // EventSource cannot set Authorization headers; the SSE endpoint
   // is on the same origin as the SPA and only reachable from clients
   // that already crossed the engine's PublishPort boundary.
   const es = new EventSource(ROUTES.logsStream(name, tail));
   logsEventSource = es;
   es.onmessage = (ev) => {
-    out.textContent += ev.data + '\n';
-    out.scrollTop = out.scrollHeight;
+    appendLogLine(out, ev.data);
   };
-  es.addEventListener('end', () => {
-    out.textContent += '\n[stream ended]\n';
+  es.addEventListener('end', (ev) => {
+    const note = document.createElement('div');
+    note.className = 'log-row log-plain';
+    note.textContent = `[stream ended: ${ev.data || 'closed'}]`;
+    out.appendChild(note);
     stopLogsStream();
   });
   es.addEventListener('error', () => {
-    out.textContent += '\n[stream error — disconnected]\n';
+    const note = document.createElement('div');
+    note.className = 'log-row log-warn';
+    note.textContent = '[stream disconnected — will retry on next click]';
+    out.appendChild(note);
     stopLogsStream();
   });
   const btn = document.getElementById('logs-stream');
