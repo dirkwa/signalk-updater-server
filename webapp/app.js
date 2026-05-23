@@ -435,8 +435,20 @@ function toggleLogsPause() {
     btn.textContent = 'Pause';
     btn.classList.remove('btn-primary');
     btn.classList.add('btn-ghost');
-    setLogsStatus(logsEventSource ? 'connected' : 'disconnected');
+    setLogsStatus(currentLogsStatus());
   }
+}
+
+// Map EventSource.readyState back to a status string the pill can
+// render. Per WHATWG: 0 = CONNECTING, 1 = OPEN, 2 = CLOSED. We avoid
+// relying on the EventSource constants because the variable might be
+// null (e.g. just torn down) and the browser-provided enum doesn't
+// add anything over the integer compare.
+function currentLogsStatus() {
+  if (!logsEventSource) return 'disconnected';
+  if (logsEventSource.readyState === 1) return 'connected';
+  if (logsEventSource.readyState === 0) return 'connecting';
+  return 'disconnected';
 }
 
 // ── Self-update ──────────────────────────────────────────
