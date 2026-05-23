@@ -4,26 +4,137 @@
     <meta charset="utf-8" />
     <title>SignalK Updater</title>
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <style>
-      body {
-        font-family: system-ui, sans-serif;
-        padding: 2rem;
-        max-width: 640px;
-        margin: 0 auto;
-      }
-      h1 {
-        font-size: 1.5rem;
-      }
-      code {
-        background: #f3f3f3;
-        padding: 0 0.25rem;
-        border-radius: 3px;
-      }
-    </style>
+    <link rel="icon" href="/app-icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/app.css" />
   </head>
   <body>
-    <h1>SignalK Updater</h1>
-    <p>The updater HTTP service is running. The web console will be built out in Phase 4.</p>
-    <p>For now, probe <code>GET /api/health</code> to verify the container is healthy.</p>
+    <header class="topbar">
+      <div class="brand">
+        <img src="/app-icon.svg" alt="" class="brand-icon" />
+        <h1>SignalK Updater</h1>
+      </div>
+      <nav class="tabs">
+        <button type="button" class="tab is-active" data-tab="dashboard">Dashboard</button>
+        <button type="button" class="tab" data-tab="versions">Versions</button>
+        <button type="button" class="tab" data-tab="logs">Logs</button>
+      </nav>
+      <div class="actions">
+        <button type="button" id="refresh" class="btn btn-ghost" title="Reload state">
+          Refresh
+        </button>
+      </div>
+    </header>
+
+    <main>
+      <section id="view-dashboard" class="view">
+        <div class="grid">
+          <article class="card" data-card="signalk-server">
+            <header>
+              <h2>SignalK Server</h2>
+              <span class="state state-unknown" data-state>—</span>
+            </header>
+            <dl>
+              <dt>Image tag</dt>
+              <dd data-field="tag">—</dd>
+              <dt>Digest</dt>
+              <dd data-field="digest" class="mono">—</dd>
+              <dt>Started</dt>
+              <dd data-field="startedAt">—</dd>
+            </dl>
+            <footer>
+              <button type="button" class="btn" data-action="start">Start</button>
+              <button type="button" class="btn" data-action="restart">Restart</button>
+              <button type="button" class="btn btn-danger" data-action="stop">Stop</button>
+            </footer>
+          </article>
+
+          <article class="card" data-card="signalk-updater-server">
+            <header>
+              <h2>Updater</h2>
+              <span class="state state-unknown" data-state>—</span>
+            </header>
+            <dl>
+              <dt>Image tag</dt>
+              <dd data-field="tag">—</dd>
+              <dt>Digest</dt>
+              <dd data-field="digest" class="mono">—</dd>
+              <dt>Started</dt>
+              <dd data-field="startedAt">—</dd>
+              <dt>Update</dt>
+              <dd data-field="updateAvailable">—</dd>
+            </dl>
+            <footer>
+              <button type="button" class="btn" data-action="self-update" disabled>
+                Self-update
+              </button>
+            </footer>
+          </article>
+
+          <article class="card" data-card="signalk-doctor-server">
+            <header>
+              <h2>Doctor</h2>
+              <span class="state state-unknown" data-state>—</span>
+            </header>
+            <dl>
+              <dt>Image tag</dt>
+              <dd data-field="tag">—</dd>
+              <dt>Digest</dt>
+              <dd data-field="digest" class="mono">—</dd>
+              <dt>Started</dt>
+              <dd data-field="startedAt">—</dd>
+            </dl>
+            <footer>
+              <a class="btn" href="/doctor" id="open-doctor">Open Doctor Console</a>
+            </footer>
+          </article>
+        </div>
+
+        <p class="footnote">
+          Last check: <span id="last-check">never</span>
+          <span class="dot">·</span>
+          Runtime: <span id="runtime-kind">unknown</span>
+        </p>
+      </section>
+
+      <section id="view-versions" class="view is-hidden">
+        <div class="versions-toolbar">
+          <p class="footnote" id="versions-meta">Loading available tags…</p>
+          <button type="button" id="versions-check" class="btn btn-ghost">Refresh</button>
+        </div>
+        <div id="channels"></div>
+      </section>
+
+      <section id="view-logs" class="view is-hidden">
+        <div class="logs-toolbar">
+          <label>
+            Lines
+            <input type="number" id="logs-lines" min="50" max="5000" value="500" />
+          </label>
+          <button type="button" id="logs-refresh" class="btn btn-ghost">Refresh</button>
+        </div>
+        <pre id="logs-output" class="logs">Loading logs…</pre>
+      </section>
+    </main>
+
+    <dialog id="confirm-modal">
+      <form method="dialog">
+        <h2 id="confirm-title">Confirm</h2>
+        <p id="confirm-body">Are you sure?</p>
+        <label class="checkbox">
+          <input type="checkbox" id="confirm-skip-backup" />
+          Skip pre-switch backup
+        </label>
+        <footer>
+          <button type="button" value="cancel" id="confirm-cancel" class="btn btn-ghost">
+            Cancel
+          </button>
+          <button type="button" value="ok" id="confirm-ok" class="btn btn-primary">Switch</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <div id="toast" class="toast is-hidden" role="status" aria-live="polite"></div>
+
+    <script type="module" src="/app.js"></script>
   </body>
 </html>
