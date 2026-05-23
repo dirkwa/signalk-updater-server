@@ -523,23 +523,29 @@ function showConfirm({ title, body, okLabel = 'OK', showSkipBackup = false }) {
       cleanup();
       resolve(result);
     };
+    // Order matters: dialog.close() synchronously emits the 'close'
+    // event, which would otherwise drive onDialogClose -> finish({
+    // confirmed: false }) before we got a chance to record the
+    // intended OK result. Settle the promise FIRST, then close the
+    // dialog — the close-event handler then sees settled=true and
+    // no-ops.
     const onOk = () => {
-      dialog.close();
       finish({
         confirmed: true,
         skipBackup: document.getElementById('confirm-skip-backup').checked,
       });
+      dialog.close();
     };
     const onCancel = () => {
-      dialog.close();
       finish({ confirmed: false });
+      dialog.close();
     };
     const onDialogCancel = (ev) => {
       // Prevent the default action so the dialog closes cleanly via
       // the same .close() path the buttons take.
       ev.preventDefault();
-      dialog.close();
       finish({ confirmed: false });
+      dialog.close();
     };
     const onDialogClose = () => finish({ confirmed: false });
     function cleanup() {
