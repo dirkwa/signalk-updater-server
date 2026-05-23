@@ -234,7 +234,7 @@ function renderVersions(data) {
           ${isCurrent ? '<span class="tag-current-pill">current</span>' : ''}
         </div>
         <span class="tag-pushed">${escapeHtml(relTime(tag.pushedAt) || '—')}</span>
-        <span class="tag-digest" title="${escapeHtml(tag.digest)}">${escapeHtml(tag.digest.slice(7, 19))}</span>
+        <span class="tag-digest" title="${escapeHtml(tag.digest ?? '')}">${escapeHtml((tag.digest ?? '').slice(7, 19))}</span>
         <button type="button" class="btn" data-switch-tag="${escapeHtml(tag.name)}" ${isCurrent ? 'disabled' : ''}>
           ${isCurrent ? 'In use' : 'Switch'}
         </button>
