@@ -177,8 +177,11 @@ async function refreshRuntime() {
   try {
     const h = await api(ROUTES.health);
     document.getElementById('runtime-kind').textContent = h.runtime ?? 'unknown';
+    const version = h.version && h.version !== 'unknown' ? `v${h.version}` : '';
+    document.getElementById('brand-version').textContent = version || '—';
   } catch (err) {
     document.getElementById('runtime-kind').textContent = 'unreachable';
+    document.getElementById('brand-version').textContent = '—';
   }
 }
 
