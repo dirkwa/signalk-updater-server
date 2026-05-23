@@ -277,6 +277,7 @@ async function refreshVersions(force = false) {
 // freshly attached client gets immediate context. The webapp side
 // just renders parsed lines.
 let logsEventSource = null;
+let logsPaused = false;
 
 const LEVEL_RX_PINO = /"level":(\d+)/; // pino numeric level
 const PINO_LEVELS = { 10: 'trace', 20: 'debug', 30: 'info', 40: 'warn', 50: 'error', 60: 'fatal' };
@@ -369,71 +370,42 @@ function clearLogs() {
   out.innerHTML = '';
 }
 
+function setLogsStatus(state) {
+  // state: 'connecting' | 'connected' | 'paused' | 'disconnected' | 'error'
+  const el = document.getElementById('logs-status');
+  el.textContent = state;
+  el.className = `logs-status logs-status-${state}`;
+}
+
 function stopLogsStream() {
   if (logsEventSource) {
     logsEventSource.close();
     logsEventSource = null;
   }
-  const btn = document.getElementById('logs-stream');
-  btn.textContent = 'Stream';
-  btn.classList.remove('btn-primary');
-  btn.classList.add('btn-ghost');
+  setLogsStatus('disconnected');
 }
 
-async function refreshLogs() {
+// Open (or re-open) the SSE stream for the currently-selected container.
+// Streaming-by-default: every time the Logs tab activates, the container
+// dropdown changes, or the lines input changes, we tear down the
+// previous stream and open a fresh one. The broker's ring buffer means
+// the new connection gets immediate backfill even on first hit.
+function startLogsStream() {
   stopLogsStream();
-  const lines = Number.parseInt(document.getElementById('logs-lines').value, 10) || 500;
-  const containerSel = document.getElementById('logs-container');
-  const name = containerSel ? containerSel.value : 'signalk-server';
-  const out = document.getElementById('logs-output');
-  clearLogs();
-  const status = document.createElement('div');
-  status.className = 'log-row log-plain';
-  status.textContent = `Loading last ${lines} lines from ${name}…`;
-  out.appendChild(status);
-  try {
-    const res = await fetch(ROUTES.logsOnce(name, lines), {
-      headers: state.token ? { Authorization: `Bearer ${state.token}` } : undefined,
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const text = await res.text();
-    clearLogs();
-    if (!text) {
-      const empty = document.createElement('div');
-      empty.className = 'log-row log-plain';
-      empty.textContent = `(no log output yet for ${name} — click Stream to subscribe)`;
-      out.appendChild(empty);
-    } else {
-      for (const line of text.split('\n')) {
-        if (line) appendLogLine(out, line);
-      }
-      out.scrollTop = out.scrollHeight;
-    }
-  } catch (err) {
-    clearLogs();
-    const e = document.createElement('div');
-    e.className = 'log-row log-err';
-    e.textContent = `Failed to read logs: ${err.message}`;
-    out.appendChild(e);
-  }
-}
-
-function toggleLogsStream() {
-  if (logsEventSource) {
-    stopLogsStream();
-    return;
-  }
   const containerSel = document.getElementById('logs-container');
   const name = containerSel ? containerSel.value : 'signalk-server';
   const tail = Number.parseInt(document.getElementById('logs-lines').value, 10) || 500;
   const out = document.getElementById('logs-output');
   clearLogs();
-  // EventSource cannot set Authorization headers; the SSE endpoint
-  // is on the same origin as the SPA and only reachable from clients
-  // that already crossed the engine's PublishPort boundary.
+  setLogsStatus('connecting');
+  // EventSource cannot set Authorization headers; the SSE endpoint is
+  // on the same origin as the SPA and only reachable from clients that
+  // already crossed the engine's PublishPort boundary.
   const es = new EventSource(ROUTES.logsStream(name, tail));
   logsEventSource = es;
+  es.onopen = () => setLogsStatus(logsPaused ? 'paused' : 'connected');
   es.onmessage = (ev) => {
+    if (logsPaused) return;
     appendLogLine(out, ev.data);
   };
   es.addEventListener('end', (ev) => {
@@ -444,16 +416,27 @@ function toggleLogsStream() {
     stopLogsStream();
   });
   es.addEventListener('error', () => {
-    const note = document.createElement('div');
-    note.className = 'log-row log-warn';
-    note.textContent = '[stream disconnected — will retry on next click]';
-    out.appendChild(note);
-    stopLogsStream();
+    setLogsStatus('error');
+    // The browser auto-reconnects an EventSource on transient errors.
+    // We only surface the visual hint; if the engine restarts the
+    // status will go connecting → connected on its own.
   });
-  const btn = document.getElementById('logs-stream');
-  btn.textContent = 'Stop streaming';
-  btn.classList.remove('btn-ghost');
-  btn.classList.add('btn-primary');
+}
+
+function toggleLogsPause() {
+  logsPaused = !logsPaused;
+  const btn = document.getElementById('logs-pause');
+  if (logsPaused) {
+    btn.textContent = 'Resume';
+    btn.classList.remove('btn-ghost');
+    btn.classList.add('btn-primary');
+    setLogsStatus('paused');
+  } else {
+    btn.textContent = 'Pause';
+    btn.classList.remove('btn-primary');
+    btn.classList.add('btn-ghost');
+    setLogsStatus(logsEventSource ? 'connected' : 'disconnected');
+  }
 }
 
 // ── Self-update ──────────────────────────────────────────
@@ -597,7 +580,14 @@ function activateTab(name) {
   });
 
   if (name === 'versions' && !state.versions) refreshVersions(false);
-  if (name === 'logs') refreshLogs();
+  if (name === 'logs') {
+    startLogsStream();
+  } else {
+    // Tear the SSE down so a logs tab left in the background doesn't
+    // keep DOM updates ticking and doesn't hold the broker open if
+    // it's the only subscriber.
+    stopLogsStream();
+  }
 }
 
 // ── Helpers ─────────────────────────────────────────────
@@ -630,12 +620,10 @@ async function boot() {
   });
 
   document.getElementById('versions-check').addEventListener('click', () => refreshVersions(true));
-  document.getElementById('logs-refresh').addEventListener('click', () => refreshLogs());
-  document.getElementById('logs-stream').addEventListener('click', () => toggleLogsStream());
-  document.getElementById('logs-container').addEventListener('change', () => {
-    stopLogsStream();
-    refreshLogs();
-  });
+  document.getElementById('logs-pause').addEventListener('click', () => toggleLogsPause());
+  document.getElementById('logs-clear').addEventListener('click', () => clearLogs());
+  document.getElementById('logs-container').addEventListener('change', () => startLogsStream());
+  document.getElementById('logs-lines').addEventListener('change', () => startLogsStream());
   document.getElementById('refresh').addEventListener('click', () => {
     refreshDashboard();
     refreshRuntime();
@@ -663,6 +651,21 @@ async function boot() {
       refreshDashboard();
     }
   }, 5000);
+
+  // Suspend the logs SSE when the page is hidden (browser tab in
+  // background, laptop lid closed, …). The broker keeps running
+  // server-side, the user just stops paying for DOM updates they
+  // can't see. Resumes automatically when the page becomes visible
+  // again if the Logs tab is still selected.
+  document.addEventListener('visibilitychange', () => {
+    const logsVisible = !document.getElementById('view-logs').classList.contains('is-hidden');
+    if (!logsVisible) return;
+    if (document.hidden) {
+      stopLogsStream();
+    } else {
+      startLogsStream();
+    }
+  });
 }
 
 boot();
