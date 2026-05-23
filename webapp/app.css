@@ -442,7 +442,6 @@ main {
   padding: 0.1rem 0.25rem;
   border-radius: 3px;
   white-space: pre-wrap;
-  word-break: break-word;
 }
 
 .log-row:hover {

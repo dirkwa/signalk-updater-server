@@ -395,6 +395,7 @@ async function refreshLogs() {
     const res = await fetch(ROUTES.logsOnce(name, lines), {
       headers: state.token ? { Authorization: `Bearer ${state.token}` } : undefined,
     });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const text = await res.text();
     clearLogs();
     if (!text) {
