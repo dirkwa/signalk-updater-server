@@ -1,18 +1,12 @@
 import type { FastifyInstance } from 'fastify';
 import { listTags } from '../ghcr.js';
-import type { Channel, Tag, VersionSettings } from '../types.js';
+import type { AnnotatedTag, Channel, VersionSettings } from '../types.js';
 import { requireToken } from '../auth.js';
 import { listLocalImagesFor } from '../local-images.js';
 import { readVersionSettings, writeVersionSettings } from '../version-settings.js';
 import { pullImage } from '../container-ops.js';
 
 const TARGET_IMAGE = process.env.SIGNALK_IMAGE ?? 'dirkwa/signalk-server';
-
-/** Tag plus a server-side `isLocal` flag so the UI can render a Pull
- *  vs Switch affordance without a second round-trip. */
-interface AnnotatedTag extends Tag {
-  isLocal: boolean;
-}
 
 function groupByChannel(tags: AnnotatedTag[]): Record<Channel, AnnotatedTag[]> {
   const out: Record<Channel, AnnotatedTag[]> = { stable: [], beta: [], master: [], dirkwa: [] };

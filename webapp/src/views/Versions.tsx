@@ -19,11 +19,11 @@ import { useToast } from '../toast';
 import { useConfirm } from '../confirm';
 import { fmtTime, relTime } from '../time';
 import type {
+  AnnotatedTag,
   Channel,
   CurrentState,
   SwitchProgressEvent,
   SwitchResult,
-  Tag,
   VersionSettings,
   VersionsResponse,
 } from '../types';
@@ -366,7 +366,7 @@ function countTags(v: VersionsResponse): number {
 
 interface ChannelCardProps {
   channel: Channel;
-  tags: Tag[];
+  tags: AnnotatedTag[];
   currentTag: string | null;
   pullingTag: string | null;
   switchInFlight: boolean;

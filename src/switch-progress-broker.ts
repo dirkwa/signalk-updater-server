@@ -7,33 +7,7 @@
  * logs to many clients) — switch progress is a different shape and
  * has at most one publisher.
  */
-
-export type SwitchStage =
-  | 'idle'
-  | 'pulling'
-  | 'trial'
-  | 'rewriting-quadlet'
-  | 'daemon-reload'
-  | 'restarting'
-  | 'health-poll'
-  | 'rolling-back'
-  | 'complete'
-  | 'failed';
-
-export interface SwitchProgressEvent {
-  /** Coarse phase the switch is in right now. */
-  stage: SwitchStage;
-  /** Free-form human message ("Pulling ghcr.io/dirkwa/signalk-server:0.6.0..."). */
-  message?: string;
-  /** Target tag. */
-  to?: string;
-  /** Previous tag, populated once the Quadlet rewrite reads it. */
-  from?: string;
-  /** Error string when stage === 'failed' or 'rolling-back'. */
-  error?: string;
-  /** Wall-clock timestamp the event was published; ISO 8601. */
-  at: string;
-}
+import type { SwitchProgressEvent } from './types.js';
 
 type Listener = (ev: SwitchProgressEvent) => void;
 

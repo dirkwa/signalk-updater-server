@@ -8,6 +8,12 @@ export interface Tag {
   size?: number;
 }
 
+/** Tag plus a server-computed `isLocal` flag. Returned by GET /api/versions
+ *  so the UI can render Pull vs Switch without a second roundtrip. */
+export interface AnnotatedTag extends Tag {
+  isLocal: boolean;
+}
+
 export interface ContainerSnapshot {
   tag: string;
   digest: string;
@@ -114,6 +120,33 @@ export interface LocalImage {
 export interface LocalImagesResponse {
   images: LocalImage[];
   totalSize: number;
+}
+
+/** Coarse stage the in-flight version switch is in. Mirrored verbatim in
+ *  webapp/src/types.ts. See `src/switch-progress-broker.ts` for the
+ *  publisher and `GET /api/versions/switch/stream` for the SSE
+ *  endpoint that emits these. */
+export type SwitchStage =
+  | 'idle'
+  | 'pulling'
+  | 'trial'
+  | 'rewriting-quadlet'
+  | 'daemon-reload'
+  | 'restarting'
+  | 'health-poll'
+  | 'rolling-back'
+  | 'complete'
+  | 'failed';
+
+/** One SSE message on the switch progress stream. */
+export interface SwitchProgressEvent {
+  stage: SwitchStage;
+  message?: string;
+  to?: string;
+  from?: string;
+  error?: string;
+  /** ISO 8601 timestamp the event was published. */
+  at: string;
 }
 
 export type RuntimeKind = 'podman' | 'docker' | 'unknown';

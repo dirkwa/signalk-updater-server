@@ -81,15 +81,18 @@ export interface Tag {
   digest: string;
   pushedAt: string;
   size?: number;
-  /** True when an image with this tag is already in the local podman
-   *  cache. Server-annotated so the UI can render Pull-vs-Switch
-   *  without a second roundtrip. */
-  isLocal?: boolean;
+}
+
+/** Tag plus a server-computed isLocal flag. The /api/versions response
+ *  carries AnnotatedTag rows; the UI uses isLocal to render Pull vs
+ *  Switch without a second roundtrip. */
+export interface AnnotatedTag extends Tag {
+  isLocal: boolean;
 }
 
 export interface VersionsResponse {
   cachedAt: string;
-  channels: Record<Channel, Tag[]>;
+  channels: Record<Channel, AnnotatedTag[]>;
 }
 
 export interface VersionSettings {
