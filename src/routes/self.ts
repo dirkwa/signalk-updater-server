@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { rewriteQuadletImage } from '../quadlet/rewriter.js';
-import { daemonReload } from '../dbus/systemd-user.js';
+import { daemonReload, restartUnit } from '../dbus/systemd-user.js';
 import { withMutex, MutexBusyError } from '../mutex.js';
 import { requireToken } from '../auth.js';
 import { listTags } from '../ghcr.js';
@@ -8,6 +8,7 @@ import { resolveRuntime, safe } from '../podman/client.js';
 
 const SELF_IMAGE = process.env.SELF_IMAGE ?? 'ghcr.io/dirkwa/signalk-updater-server';
 const SELF_QUADLET = 'signalk-updater-server.container';
+const SELF_UNIT = 'signalk-updater-server.service';
 
 interface SelfState {
   currentTag: string;
@@ -77,9 +78,11 @@ export async function registerSelfRoutes(app: FastifyInstance): Promise<void> {
               }),
           );
           if (!pull.ok) throw new Error(`pull failed: ${pull.error.userMessage}`);
-          // Rewrite own Quadlet
+          // Rewrite own Quadlet so the next start picks up the new image.
           await rewriteQuadletImage(SELF_QUADLET, newImage);
-          // daemon-reload, then schedule self-exit so systemd picks up the new unit and restarts us.
+          // daemon-reload so systemd re-reads the generated unit file.
+          // The actual restart is fired AFTER the HTTP response flushes
+          // (see below) so the client gets the OK reply first.
           await daemonReload();
         });
       } catch (err) {
@@ -90,11 +93,30 @@ export async function registerSelfRoutes(app: FastifyInstance): Promise<void> {
         reply.code(500);
         return { error: err instanceof Error ? err.message : 'unknown error' };
       }
-      // Schedule exit AFTER the response is flushed. systemd's Restart=on-failure
-      // will restart us on the new tag (Quadlet now references the new image).
+      // Send the response BEFORE asking systemd to restart us — once
+      // restartUnit() fires, podman is going to SIGTERM our process
+      // mid-call and the socket dies. The 500ms grace gives the
+      // kernel time to flush the TCP buffer.
+      //
+      // We use systemctl restart (via DBus) rather than a clean
+      // self-exit. The previous design exited zero and relied on
+      // Restart=on-failure to bring us back, but Restart=on-failure
+      // ignores zero exit codes — the unit just goes inactive(dead)
+      // and never restarts.
+      // (See the 2026-05-24T17:19 incident: clean exit, no restart.)
+      // restartUnit triggers systemd unconditionally regardless of
+      // Restart=, so it works with the CC-4-mandated on-failure policy.
       reply.send({ ok: true, from: state, to: tag, exiting: true });
       setTimeout(() => {
-        process.exit(0);
+        // Best-effort: if the DBus call itself fails, log and exit so
+        // operator notices via the dead unit; the Quadlet is already
+        // pointing at the new image, so a manual `systemctl --user start`
+        // will bring it up correctly.
+        restartUnit(SELF_UNIT).catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.error(`self-update: restartUnit failed: ${msg}`);
+          process.exit(1);
+        });
       }, 500);
       return reply;
     },

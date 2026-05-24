@@ -209,18 +209,28 @@ reviews:
           `src/routes/logs-stream.ts`. Don't suggest adding an
           `Authorization` header to the EventSource — there's no way.
 
-        ## Self-update is fire-and-forget exit
+        ## Self-update is a DBus self-restart (NOT process.exit)
 
         `POST /api/self/update` (`src/routes/self.ts`) pulls the new
         image, rewrites its own Quadlet, calls `daemon-reload`,
-        flushes the HTTP response, and then schedules `process.exit(0)`
-        500ms later. systemd's `Restart=on-failure` then restarts the
-        container on the new tag.
+        flushes the HTTP response, and then 500ms later calls
+        `restartUnit('signalk-updater-server.service')` via DBus.
+        systemd `SIGTERM`s our process and brings it back on the new
+        tag.
 
-        - **Don't flag the `process.exit(0)` after a successful
-          response** — this is the documented restart path. The
-          comment in `src/routes/self.ts` explains the ordering.
-        - Schedule the exit AFTER the response is sent (not in
+        - **Don't suggest going back to `process.exit(0)`** — that's
+          the regressed pattern that caused the 2026-05-24 incident.
+          `Restart=on-failure` (mandated by CC-4) ignores zero exit
+          codes; the unit just goes `inactive(dead)` and never
+          restarts. There is a static-guard test in
+          `test/self.test.ts` that fails if `process.exit(0)` reappears
+          in this file.
+        - The `process.exit(1)` in the `restartUnit().catch(...)`
+          error branch is intentional: if DBus itself fails, exit
+          loudly so the operator notices the dead unit (the Quadlet
+          already points at the new image, so `systemctl --user start`
+          recovers).
+        - Schedule the restart AFTER the response is sent (not in
           parallel) so the browser gets `{ ok: true, exiting: true }`
           before the connection drops.
 
@@ -351,8 +361,10 @@ reviews:
         - The webapp `types.ts` mirror of `src/types.ts` with the
           documented cosmetic differences — see "Webapp / engine type
           drift" above.
-        - `process.exit(0)` after `POST /api/self/update` responds —
-          see "Self-update is fire-and-forget exit" above.
+        - `restartUnit(SELF_UNIT)` (NOT `process.exit(0)`) after
+          `POST /api/self/update` responds — see "Self-update is a
+          DBus self-restart" above. Don't suggest going back to the
+          exit-and-pray pattern.
         - The SSE log broker drain's string-equality dedup — see "SSE
           log broker drain" above.
         - The "code twin" overlap with signalk-doctor-server (same
