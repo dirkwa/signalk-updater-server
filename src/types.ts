@@ -8,6 +8,12 @@ export interface Tag {
   size?: number;
 }
 
+/** Tag plus a server-computed `isLocal` flag. Returned by GET /api/versions
+ *  so the UI can render Pull vs Switch without a second roundtrip. */
+export interface AnnotatedTag extends Tag {
+  isLocal: boolean;
+}
+
 export interface ContainerSnapshot {
   tag: string;
   digest: string;
@@ -86,6 +92,61 @@ export interface AvailableUpdates {
   updater: UpdateInfo;
   doctor: UpdateInfo;
   lastCheckedAt: string | null;
+}
+
+/** Persisted per-installation Versions-tab filter. Lives at
+ *  ~/.signalk-updater/version-settings.json (under /data inside the
+ *  container). Defaults to stable-only — beta and master rows stay
+ *  hidden until the operator opts in. */
+export interface VersionSettings {
+  showBeta: boolean;
+  showMaster: boolean;
+}
+
+/** Locally-pulled signalk-server image, as enumerated by dockerode.
+ *  The tag field strips the registry+repo prefix; size is the layered
+ *  on-disk size dockerode reports. */
+export interface LocalImage {
+  /** Just the tag suffix after the final `:`, e.g. "0.6.0" or "master-ab12cd". */
+  tag: string;
+  /** Image id digest (sha256:...). */
+  digest: string;
+  /** Container-runtime "Created" timestamp; ISO 8601. */
+  created: string;
+  /** Sum of layer sizes reported by dockerode in bytes. */
+  size: number;
+}
+
+export interface LocalImagesResponse {
+  images: LocalImage[];
+  totalSize: number;
+}
+
+/** Coarse stage the in-flight version switch is in. Mirrored verbatim in
+ *  webapp/src/types.ts. See `src/switch-progress-broker.ts` for the
+ *  publisher and `GET /api/versions/switch/stream` for the SSE
+ *  endpoint that emits these. */
+export type SwitchStage =
+  | 'idle'
+  | 'pulling'
+  | 'trial'
+  | 'rewriting-quadlet'
+  | 'daemon-reload'
+  | 'restarting'
+  | 'health-poll'
+  | 'rolling-back'
+  | 'complete'
+  | 'failed';
+
+/** One SSE message on the switch progress stream. */
+export interface SwitchProgressEvent {
+  stage: SwitchStage;
+  message?: string;
+  to?: string;
+  from?: string;
+  error?: string;
+  /** ISO 8601 timestamp the event was published. */
+  at: string;
 }
 
 export type RuntimeKind = 'podman' | 'docker' | 'unknown';

@@ -83,9 +83,54 @@ export interface Tag {
   size?: number;
 }
 
+/** Tag plus a server-computed isLocal flag. The /api/versions response
+ *  carries AnnotatedTag rows; the UI uses isLocal to render Pull vs
+ *  Switch without a second roundtrip. */
+export interface AnnotatedTag extends Tag {
+  isLocal: boolean;
+}
+
 export interface VersionsResponse {
   cachedAt: string;
-  channels: Record<Channel, Tag[]>;
+  channels: Record<Channel, AnnotatedTag[]>;
+}
+
+export interface VersionSettings {
+  showBeta: boolean;
+  showMaster: boolean;
+}
+
+export interface LocalImage {
+  tag: string;
+  digest: string;
+  created: string;
+  size: number;
+}
+
+export interface LocalImagesResponse {
+  images: LocalImage[];
+  totalSize: number;
+}
+
+export type SwitchStage =
+  | 'idle'
+  | 'pulling'
+  | 'trial'
+  | 'rewriting-quadlet'
+  | 'daemon-reload'
+  | 'restarting'
+  | 'health-poll'
+  | 'rolling-back'
+  | 'complete'
+  | 'failed';
+
+export interface SwitchProgressEvent {
+  stage: SwitchStage;
+  message?: string;
+  to?: string;
+  from?: string;
+  error?: string;
+  at: string;
 }
 
 export interface SwitchResult {
