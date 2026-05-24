@@ -1,33 +1,23 @@
 import type { FastifyInstance } from 'fastify';
 import { listTags } from '../ghcr.js';
 import { compareSemver } from '../tagClassifier.js';
-import { resolveRuntime } from '../podman/client.js';
+import { resolveRuntime, safe } from '../podman/client.js';
 import { requireToken } from '../auth.js';
 import { performDoctorSwitch } from '../doctor-switch-service.js';
 import { MutexBusyError } from '../mutex.js';
+import type { DoctorState } from '../types.js';
 
 const DOCTOR_IMAGE = process.env.DOCTOR_IMAGE ?? 'ghcr.io/dirkwa/signalk-doctor-server';
 const DOCTOR_CONTAINER = 'signalk-doctor-server';
 
-interface DoctorState {
-  currentTag: string;
-  availableTag?: string;
-  updateAvailable: boolean;
-}
-
-// Read the doctor's running image tag from podman's container inspect.
-// Mirrors readSelfTag() in self.ts — same pattern, different container.
 async function readDoctorTag(): Promise<string> {
   const rt = await resolveRuntime();
   if (!rt) return 'unknown';
-  try {
-    const c = rt.client.getContainer(DOCTOR_CONTAINER);
-    const info = (await c.inspect()) as unknown as { Image?: string; ImageName?: string };
-    const image = info.ImageName ?? info.Image ?? '';
-    return image.includes(':') ? image.slice(image.lastIndexOf(':') + 1) : 'unknown';
-  } catch {
-    return 'unknown';
-  }
+  const inspectResult = await safe(() => rt.client.getContainer(DOCTOR_CONTAINER).inspect());
+  if (!inspectResult.ok) return 'unknown';
+  const info = inspectResult.value as unknown as { Image?: string; ImageName?: string };
+  const image = info.ImageName ?? info.Image ?? '';
+  return image.includes(':') ? image.slice(image.lastIndexOf(':') + 1) : 'unknown';
 }
 
 async function deriveLatest(): Promise<string | null> {
