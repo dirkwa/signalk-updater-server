@@ -8,7 +8,7 @@ import { loadSession } from './session';
 import { useApi } from './hooks/useApi';
 import { useThemeSync } from './hooks/useThemeSync';
 import { useToast } from './toast';
-import type { HealthResponse } from './types';
+import type { AvailableUpdates, HealthResponse } from './types';
 
 type Route = 'dashboard' | 'versions' | 'logs';
 
@@ -64,6 +64,18 @@ export function App() {
     intervalMs: 30000,
   });
 
+  // App-level daily-check snapshot. The server runs the actual GHCR
+  // poll every 24h; we re-fetch the cached struct every 5 min so a
+  // mid-day refresh inside the engine surfaces here without a page
+  // reload. The badge stays visible across views (Dashboard / Versions
+  // / Logs) so a user not on the Dashboard tab still gets the notice.
+  const updates = useApi<AvailableUpdates>((signal) => api('/api/updates/available', { signal }), {
+    intervalMs: 5 * 60 * 1000,
+  });
+  const pendingUpdates =
+    (updates.data?.updater.updateAvailable ? 1 : 0) +
+    (updates.data?.doctor.updateAvailable ? 1 : 0);
+
   return (
     <Container className="py-4">
       <div className="d-flex align-items-center mb-4">
@@ -76,6 +88,21 @@ export function App() {
           <Badge color="info" className="ms-2" title="Container runtime">
             {health.data.runtime}
           </Badge>
+        ) : null}
+        {pendingUpdates > 0 ? (
+          <a
+            href="#/dashboard"
+            className="ms-auto text-decoration-none"
+            onClick={(e) => {
+              e.preventDefault();
+              navigate('dashboard');
+            }}
+            title="Open Dashboard to apply"
+          >
+            <Badge color="warning" pill>
+              {pendingUpdates === 1 ? '1 update available' : `${pendingUpdates} updates available`}
+            </Badge>
+          </a>
         ) : null}
       </div>
 
