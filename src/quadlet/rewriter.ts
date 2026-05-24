@@ -85,10 +85,11 @@ export function rewriteImageLine(
   let previous = '';
   let found = false;
   for (let i = 0; i < lines.length; i++) {
-    const trimmed = lines[i].trim();
-    if (/^Image\s*=/i.test(trimmed) && !found) {
-      const m = lines[i].match(/^(\s*)Image\s*=\s*(.*)$/i);
-      if (m) {
+    const line = lines[i];
+    if (line === undefined) continue;
+    if (/^Image\s*=/i.test(line.trim()) && !found) {
+      const m = line.match(/^(\s*)Image\s*=\s*(.*)$/i);
+      if (m && m[1] !== undefined && m[2] !== undefined) {
         previous = m[2].trim();
         lines[i] = `${m[1]}Image=${newImage}`;
         found = true;

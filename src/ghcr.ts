@@ -43,7 +43,7 @@ async function fetchTagList(image: string, token: string): Promise<string[]> {
     const link: string | null = res.headers.get('link');
     if (link && /rel="?next"?/i.test(link)) {
       const m = link.match(/<([^>]+)>/);
-      url = m ? new URL(m[1], 'https://ghcr.io').toString() : null;
+      url = m && m[1] ? new URL(m[1], 'https://ghcr.io').toString() : null;
     } else {
       url = null;
     }

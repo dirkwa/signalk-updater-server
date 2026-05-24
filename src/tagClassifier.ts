@@ -33,8 +33,11 @@ export function compareSemver(a: string, b: string): number {
   const B = b.match(SEMVER_RE);
   if (!A || !B) return 0;
   for (let i = 1; i <= 3; i++) {
-    const da = Number.parseInt(A[i], 10);
-    const db = Number.parseInt(B[i], 10);
+    const ai = A[i];
+    const bi = B[i];
+    if (ai === undefined || bi === undefined) return 0;
+    const da = Number.parseInt(ai, 10);
+    const db = Number.parseInt(bi, 10);
     if (da !== db) return da - db;
   }
   // prerelease: absence > presence (stable > prerelease)
