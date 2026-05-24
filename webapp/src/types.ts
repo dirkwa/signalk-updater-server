@@ -47,3 +47,29 @@ export interface SelfState {
   availableTag?: string;
   updateAvailable: boolean;
 }
+
+export type Channel = 'stable' | 'beta' | 'master' | 'dirkwa';
+
+export interface Tag {
+  name: string;
+  channel: Channel;
+  digest: string;
+  pushedAt: string;
+  size?: number;
+}
+
+export interface VersionsResponse {
+  cachedAt: string;
+  channels: Record<Channel, Tag[]>;
+}
+
+export interface SwitchResult {
+  ok: boolean;
+  from: string;
+  to: string;
+  durationMs: number;
+  hooksRun: string[];
+  rolledBack?: boolean;
+  error?: string;
+  logsRef?: string;
+}
