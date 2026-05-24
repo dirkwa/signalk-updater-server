@@ -42,34 +42,38 @@ export async function trialRun(
 ): Promise<{ ok: boolean; error?: string }> {
   const rt = await resolveRuntime();
   if (!rt) return { ok: false, error: 'runtime unreachable' };
-  let c: { remove: (o?: { force?: boolean }) => Promise<void> } | null = null;
-  try {
-    const created = await rt.client.createContainer({
+
+  const createResult = await safe(() =>
+    rt.client.createContainer({
       Image: image,
       name: `${namePrefix}-${Date.now()}`,
       Cmd: ['node', '--version'],
       HostConfig: { AutoRemove: false },
-    });
-    c = { remove: (o) => created.remove(o ?? { force: true }) };
-    await created.start();
+    }),
+  );
+  if (!createResult.ok) return { ok: false, error: createResult.error.userMessage };
+  const created = createResult.value;
+
+  const startResult = await safe(() => created.start());
+  if (!startResult.ok) {
+    await safe(() => created.remove({ force: true }));
+    return { ok: false, error: startResult.error.userMessage };
+  }
+
+  try {
     await delay(3000);
-    const info = (await created.inspect()) as unknown as {
+    const inspectResult = await safe(() => created.inspect());
+    if (!inspectResult.ok) {
+      return { ok: false, error: inspectResult.error.userMessage };
+    }
+    const info = inspectResult.value as unknown as {
       State?: { Running?: boolean; ExitCode?: number };
     };
     if (info.State?.Running) return { ok: true };
     if (info.State?.ExitCode === 0) return { ok: true };
     return { ok: false, error: `trial exited with code ${info.State?.ExitCode}` };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return { ok: false, error: msg };
   } finally {
-    if (c) {
-      try {
-        await c.remove({ force: true });
-      } catch {
-        // best-effort
-      }
-    }
+    await safe(() => created.remove({ force: true }));
   }
 }
 

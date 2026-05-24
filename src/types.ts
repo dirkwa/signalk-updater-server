@@ -63,6 +63,15 @@ export interface SelfUpdateRequest {
   tag?: string;
 }
 
+/** GET /api/doctor/state — the updater's view of what the doctor container
+ *  is running vs. what's available on GHCR. The doctor never serves this
+ *  itself; the updater owns the GHCR check + Quadlet-rewrite path. */
+export interface DoctorState {
+  currentTag: string;
+  availableTag?: string;
+  updateAvailable: boolean;
+}
+
 export type RuntimeKind = 'podman' | 'docker' | 'unknown';
 
 export interface HealthResponse {
