@@ -1,6 +1,15 @@
 // Webapp mirror of the engine's REST shapes. Hand-rolled rather than
 // importing from src/ so the webapp build doesn't pick up Node-only
-// imports along with the types. Keep in sync with src/types.ts.
+// imports along with the types.
+//
+// Drift policy: this file MUST stay structurally equivalent to
+// src/types.ts. Field names, optionality, and string literal unions
+// have to match exactly. Cosmetic differences are intentional:
+//   - UpdaterSnapshot is extracted as an interface here instead of
+//     the inline intersection in src/types.ts (same shape, easier
+//     to spread/Pick from React props).
+//   - ContainerState is named here instead of inlined (same union).
+// If you change a server-side type, change this file in the same PR.
 
 export type ContainerState = 'running' | 'stopped' | 'starting' | 'unhealthy' | 'missing';
 

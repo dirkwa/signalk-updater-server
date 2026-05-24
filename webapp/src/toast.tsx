@@ -1,4 +1,12 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import type { ReactNode } from 'react';
 import { Toast, ToastBody, ToastHeader } from 'reactstrap';
 
@@ -17,13 +25,14 @@ interface ToastContextValue {
 
 const ToastContext = createContext<ToastContextValue | null>(null);
 
-let nextId = 1;
-
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [entries, setEntries] = useState<ToastEntry[]>([]);
+  // Per-provider ID counter so an HMR-induced module reload can't
+  // collide with toasts that survived the reload.
+  const nextIdRef = useRef(1);
 
   const show = useCallback((message: string, kind: ToastKind = 'info', durationMs = 4000) => {
-    const id = nextId++;
+    const id = nextIdRef.current++;
     setEntries((prev) => [...prev, { id, message, kind, durationMs }]);
   }, []);
 
