@@ -88,6 +88,34 @@ export interface AvailableUpdates {
   lastCheckedAt: string | null;
 }
 
+/** Persisted per-installation Versions-tab filter. Lives at
+ *  ~/.signalk-updater/version-settings.json (under /data inside the
+ *  container). Defaults to stable-only — beta and master rows stay
+ *  hidden until the operator opts in. */
+export interface VersionSettings {
+  showBeta: boolean;
+  showMaster: boolean;
+}
+
+/** Locally-pulled signalk-server image, as enumerated by dockerode.
+ *  The tag field strips the registry+repo prefix; size is the layered
+ *  on-disk size dockerode reports. */
+export interface LocalImage {
+  /** Just the tag suffix after the final `:`, e.g. "0.6.0" or "master-ab12cd". */
+  tag: string;
+  /** Image id digest (sha256:...). */
+  digest: string;
+  /** Container-runtime "Created" timestamp; ISO 8601. */
+  created: string;
+  /** Sum of layer sizes reported by dockerode in bytes. */
+  size: number;
+}
+
+export interface LocalImagesResponse {
+  images: LocalImage[];
+  totalSize: number;
+}
+
 export type RuntimeKind = 'podman' | 'docker' | 'unknown';
 
 export interface HealthResponse {
