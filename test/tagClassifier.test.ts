@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyChannel, compareSemver } from '../src/tagClassifier.js';
+import { classifyChannel, compareSemver, isSemverTag } from '../src/tagClassifier.js';
 
 describe('classifyChannel', () => {
   it('stable for plain semver', () => {
@@ -39,5 +39,27 @@ describe('compareSemver', () => {
   });
   it('returns 0 for non-semver', () => {
     expect(compareSemver('master-abc', 'v1.0.0')).toBe(0);
+  });
+});
+
+describe('isSemverTag', () => {
+  it('matches plain semver', () => {
+    expect(isSemverTag('1.2.3')).toBe(true);
+    expect(isSemverTag('v1.2.3')).toBe(true);
+  });
+  it('matches prerelease semver', () => {
+    expect(isSemverTag('v1.2.3-beta.1')).toBe(true);
+    expect(isSemverTag('v1.2.3-rc.2')).toBe(true);
+  });
+  it('rejects floating tags', () => {
+    expect(isSemverTag('latest')).toBe(false);
+    expect(isSemverTag('master')).toBe(false);
+    expect(isSemverTag('master-abc123')).toBe(false);
+    expect(isSemverTag('dirkwa-experimental')).toBe(false);
+  });
+  it('rejects sha digests and gibberish', () => {
+    expect(isSemverTag('sha256:abcdef0123456789')).toBe(false);
+    expect(isSemverTag('')).toBe(false);
+    expect(isSemverTag('not.a.version')).toBe(false);
   });
 });
