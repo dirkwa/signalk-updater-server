@@ -57,6 +57,22 @@ export interface DoctorState {
   updateAvailable: boolean;
 }
 
+export interface UpdateInfo {
+  currentTag: string;
+  availableTag?: string;
+  updateAvailable: boolean;
+}
+
+// Mirror of the server-side AvailableUpdates type — the daily GHCR
+// snapshot for both peer engines. Drives the App-level "1 update
+// available" badge so a user sitting on Logs or Versions still sees
+// the notification.
+export interface AvailableUpdates {
+  updater: UpdateInfo;
+  doctor: UpdateInfo;
+  lastCheckedAt: string | null;
+}
+
 export type Channel = 'stable' | 'beta' | 'master' | 'dirkwa';
 
 export interface Tag {
