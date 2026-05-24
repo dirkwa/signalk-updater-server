@@ -12,9 +12,12 @@ import { registerSelfRoutes } from './routes/self.js';
 import { registerLogStreamRoutes } from './routes/logs-stream.js';
 import { registerHardwareRoutes } from './routes/hardware.js';
 
-// Webapp directory inside the container image. Build copies webapp/ to
-// /app/webapp; the env var lets dev mode point at the source tree.
-const WEBAPP_ROOT = process.env.WEBAPP_ROOT ?? '/app/webapp';
+// Built webapp directory inside the container image. The Vite build
+// emits to public/ at the repo root, and the Dockerfile copies that
+// into /app/public. The env var lets local dev point WEBAPP_ROOT at
+// the source tree's public/ folder (or skip it entirely — falling
+// through to the API-only mode that returns a 404 for GET /).
+const WEBAPP_ROOT = process.env.WEBAPP_ROOT ?? '/app/public';
 
 export async function createServer(): Promise<FastifyInstance> {
   const app = Fastify({
@@ -34,10 +37,9 @@ export async function createServer(): Promise<FastifyInstance> {
   await registerLogStreamRoutes(app);
   await registerHardwareRoutes(app);
 
-  // Serve the webapp at /. Without this, opening the Updater Console URL
-  // in a browser hits Fastify's default 404 for GET / — confusing UX.
-  // The placeholder index.html will be replaced by a real Vite+React
-  // build in a later phase; this just lays down the route.
+  // Serve the built React webapp at /. Without this, opening the
+  // Updater Console URL in a browser hits Fastify's default 404 for
+  // GET / — confusing UX.
   if (existsSync(WEBAPP_ROOT)) {
     await app.register(fastifyStatic, {
       root: resolve(WEBAPP_ROOT),
