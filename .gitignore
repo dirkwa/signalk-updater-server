@@ -6,3 +6,4 @@ public/
 coverage/
 .env
 .env.local
+cr-review*.txt
