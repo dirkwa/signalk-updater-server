@@ -1,6 +1,6 @@
 # signalk-updater-server
 
-Peer engine container for the SignalK container stack. Owns image lifecycle, version switching, self-update, hardware passthrough, and SSE log streaming. Runs alongside (not inside) `signalk-server`.
+Peer engine container for the SignalK container stack. Owns image lifecycle, version switching, self-update, doctor-update, hardware passthrough, and SSE log streaming. Runs alongside (not inside) `signalk-server`.
 
 ## Architecture facts you must keep in mind
 
@@ -8,7 +8,8 @@ Peer engine container for the SignalK container stack. Owns image lifecycle, ver
 - **Survives signalk-server outages.** Recovery never depends on signalk-server being healthy. The companion signalk-doctor-server is the further-back safety net for when this container itself is broken (bad self-update, crashloop, DBus dead).
 - **Quadlet rewriter.** Every version switch and hardware change is implemented as: (1) snapshot existing Quadlet to `~/.signalk-doctor/snapshots/<timestamp>-<filename>`, (2) atomic rewrite (tmp + fsync + rename + dir-fsync), (3) DBus → `systemctl --user daemon-reload + restart`. Never edit Quadlets in place.
 - **Self-update is fire-and-forget exit.** `POST /api/self/update` pulls the new image, rewrites its own Quadlet, flushes the HTTP response, then schedules `process.exit(0)` 500ms later. systemd's `Restart=on-failure` brings it back on the new tag. The response order matters — the client must see `{ ok: true, exiting: true }` before the connection drops.
-- **Single-writer mutex.** A file lock at `~/.signalk-updater/operation.lock` serializes switch / self-update / hardware-apply across this container and `signalk-doctor-server`.
+- **Doctor-update is a normal switch.** `POST /api/doctor/update` runs the same pull → trial → rewrite → daemon-reload → restart → health-poll → rollback flow as `signalk-server` switches, but pointed at the doctor's image, Quadlet, and `/api/health` endpoint. The updater stays alive across this flow (no `process.exit`) because it's just rewriting somebody else's Quadlet. The doctor itself never offers a self-update UI by design — the Doctor Console is the read-mostly recovery surface and points users back here for the actual mutation.
+- **Single-writer mutex.** A file lock at `~/.signalk-updater/operation.lock` serializes switch / self-update / doctor-switch / hardware-apply across this container and `signalk-doctor-server`.
 - **Categorized errors.** Every dockerode call goes through `src/podman/client.ts` `safe()` wrapper that classifies errors into network / auth / disk / permission / not-found / unknown. UI surfaces `userMessage`, never raw error text.
 - **DBus via shelled-out `busctl`.** Inside the container we call `busctl` (from the `systemd` apt package) against `/host/dbus` instead of a JS DBus library. The host bus enforces EXTERNAL UID handshake, and a JS lib running inside a userns'd container can't satisfy that without invasive plumbing; `busctl` already does the right thing.
 
@@ -80,7 +81,9 @@ Tag `vX.Y.Z` triggers `.github/workflows/publish-image.yml` which builds a multi
 | `src/quadlet/rewriter.ts`             | Atomic Quadlet writes + snapshot bookkeeping (CC-1). Owns `last-good.json`.                                                                                 |
 | `src/dbus/systemd-user.ts`            | `busctl` shell-out for `systemctl --user daemon-reload` / `restart`.                                                                                        |
 | `src/mutex.ts`                        | File-lock wrapper around `~/.signalk-updater/operation.lock` (CC-5).                                                                                        |
-| `src/switch-service.ts`               | Version-switch orchestration: pull, trial-run, rewrite Quadlet, daemon-reload, wait for health, rollback on failure.                                        |
+| `src/container-ops.ts`                | Shared `pullImage`, `trialRun`, `pollHealth` helpers used by every switch flow.                                                                             |
+| `src/switch-service.ts`               | signalk-server version-switch orchestration: pull, trial-run, rewrite Quadlet, daemon-reload, wait for health, rollback on failure.                         |
+| `src/doctor-switch-service.ts`        | signalk-doctor-server version-switch orchestration. Same shape as `switch-service.ts` but with no pre-switch backup (the doctor has no DB).                 |
 | `src/self.ts`, `src/ghcr.ts`          | Self-update logic + GHCR registry API.                                                                                                                      |
 | `src/tagClassifier.ts`                | Tag → `stable` / `beta` / `master` / `dirkwa` channel classifier + semver comparator.                                                                       |
 | `src/hardware.ts`                     | Hardware Quadlet section parser / rewriter.                                                                                                                 |
@@ -91,6 +94,7 @@ Tag `vX.Y.Z` triggers `.github/workflows/publish-image.yml` which builds a multi
 | `src/routes/versions.ts`              | `GET /api/versions`, `POST /api/versions/check`. Read = token-or-localhost; check = bearer (forces a fresh GHCR pull).                                      |
 | `src/routes/switch.ts`                | `POST /api/versions/switch`, `POST /api/versions/rollback`. Bearer.                                                                                         |
 | `src/routes/self.ts`                  | `GET /api/self/state`, `POST /api/self/update`. Update = bearer. Update path schedules `process.exit(0)` AFTER the response flushes.                        |
+| `src/routes/doctor.ts`                | `GET /api/doctor/state`, `POST /api/doctor/update`. Update = bearer. Drives `performDoctorSwitch`; the updater itself stays alive.                          |
 | `src/routes/lifecycle.ts`             | `POST /api/signalk/{start,stop,restart}`. Bearer.                                                                                                           |
 | `src/routes/hardware.ts`              | `GET /api/hardware`, `POST /api/hardware/apply`. Apply = bearer.                                                                                            |
 | `src/routes/logs-stream.ts`           | `GET /api/containers/:name/logs/stream` (SSE) + `/logs` (snapshot tail). Token-or-localhost. SSE drain has documented string-equality dedup.                |
@@ -106,7 +110,7 @@ Tag `vX.Y.Z` triggers `.github/workflows/publish-image.yml` which builds a multi
 | `webapp/src/confirm.tsx`              | Reactstrap modal confirm via `ConfirmProvider` + `useConfirm()`. Promise-based; skip-backup checkbox plumbed for switch flows.                              |
 | `webapp/src/hooks/useApi.ts`          | Polling fetch hook with mount-guard, in-flight cancellation, and visibility-aware interval.                                                                 |
 | `webapp/src/hooks/useThemeSync.ts`    | Mirrors OS `prefers-color-scheme` changes onto `<html data-bs-theme>` at runtime.                                                                           |
-| `webapp/src/views/Dashboard.tsx`      | Three container cards (server / updater / doctor), lifecycle buttons, self-update, open-doctor link.                                                        |
+| `webapp/src/views/Dashboard.tsx`      | Three container cards (server / updater / doctor), lifecycle buttons, self-update, doctor-update, open-doctor link.                                         |
 | `webapp/src/views/Versions.tsx`       | Per-channel cards with the current-tag badge and a Switch flow that surfaces success / rollback / failure via toasts.                                       |
 | `webapp/src/views/Logs.tsx`           | SSE log viewer with pause / clear / auto-scroll-when-at-bottom + visibility-aware teardown/reconnect.                                                       |
 | `webapp/src/views/*.test.tsx`         | Dashboard + Versions smoke tests. `globalThis.fetch` stubs snapshot the original at module load and restore in `afterEach`.                                 |
