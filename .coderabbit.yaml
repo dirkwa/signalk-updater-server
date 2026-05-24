@@ -209,6 +209,51 @@ reviews:
           `src/routes/logs-stream.ts`. Don't suggest adding an
           `Authorization` header to the EventSource — there's no way.
 
+        ## Switch progress broker
+
+        `src/switch-progress-broker.ts` is a module-level singleton
+        (single publisher, N subscribers). The CC-5 mutex guarantees
+        only one switch flow is in flight, so we don't need a
+        per-flow queue.
+
+        - `publishSwitchEvent` is called from `switch-service.ts` and
+          `doctor-switch-service.ts` at every stage transition. The
+          stage union (`pulling` / `trial` / `rewriting-quadlet` /
+          `daemon-reload` / `restarting` / `health-poll` /
+          `rolling-back` / `complete` / `failed`) is stable and
+          mirrored in `webapp/src/types.ts` — keep them in lockstep.
+        - `GET /api/versions/switch/stream` emits the last event on
+          connect so a freshly-opened browser tab picks up an
+          in-flight switch's state immediately. Don't replace this
+          with a "subscribe + wait for next event" model; mid-flow
+          page reloads are a real workflow.
+        - The route is unauthenticated — browser `EventSource` can't
+          set headers; same rationale as the log stream. Don't
+          suggest adding `Authorization` to the SSE endpoint.
+        - `POST /api/versions/switch` still returns the final
+          `SwitchResult` synchronously. The SSE is additive, not a
+          replacement. Don't change the POST to return-then-stream.
+
+        ## Versions filter persistence
+
+        `src/version-settings.ts` reads/writes
+        `/data/version-settings.json` for the per-install
+        `{showBeta, showMaster}` toggles surfaced on the Versions tab.
+        The PUT route whitelists known keys so a misbehaving client
+        can't pollute the file with arbitrary fields. Defaults are
+        stable-only — both flags `false`. `dirkwa` builds are always
+        shown regardless of either flag (it's the user's own channel).
+
+        ## Local image enumeration
+
+        `src/local-images.ts` enumerates `dockerode.listImages()` and
+        filters by repo prefix, returning a flattened tag list. The
+        return shape strips multi-tagged images into one row per tag,
+        and drops `<none>:<none>` dangling layers. `GET /api/versions`
+        joins this with the GHCR result and annotates each remote
+        `Tag` with `isLocal: boolean` so the UI can render Pull vs
+        Switch without a second roundtrip.
+
         ## Self-update is a DBus self-restart (NOT process.exit)
 
         `POST /api/self/update` (`src/routes/self.ts`) pulls the new
