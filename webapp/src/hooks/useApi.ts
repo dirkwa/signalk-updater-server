@@ -20,6 +20,10 @@ export interface UseApiResult<T> {
  * so a backgrounded tab doesn't keep hitting the engine. The first
  * fetch runs immediately on mount, the polling timer kicks off after
  * that. Aborts in-flight requests on unmount.
+ *
+ * refresh() aborts any in-flight refresh before starting a new one,
+ * so rapid clicks on a Refresh button can't stale-overwrite a newer
+ * response with an older one that just happened to finish later.
  */
 export function useApi<T>(
   fetcher: (signal: AbortSignal) => Promise<T>,
@@ -33,25 +37,32 @@ export function useApi<T>(
   // render just because the caller passed an inline arrow function.
   const fetcherRef = useRef(fetcher);
   fetcherRef.current = fetcher;
+  const refreshAbortRef = useRef<AbortController | null>(null);
+  const mountedRef = useRef(true);
 
   const refresh = useCallback(async (): Promise<T | null> => {
+    refreshAbortRef.current?.abort();
     const ac = new AbortController();
+    refreshAbortRef.current = ac;
     setLoading(true);
     try {
       const value = await fetcherRef.current(ac.signal);
+      if (!mountedRef.current || ac.signal.aborted) return null;
       setData(value);
       setError(null);
       return value;
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') return null;
+      if (!mountedRef.current) return null;
       setError(err instanceof Error ? err.message : String(err));
       return null;
     } finally {
-      setLoading(false);
+      if (mountedRef.current && !ac.signal.aborted) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
+    mountedRef.current = true;
     let cancelled = false;
     const ac = new AbortController();
     void (async () => {
@@ -72,6 +83,8 @@ export function useApi<T>(
     return () => {
       cancelled = true;
       ac.abort();
+      mountedRef.current = false;
+      refreshAbortRef.current?.abort();
     };
   }, []);
 
