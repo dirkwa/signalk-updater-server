@@ -1,8 +1,5 @@
 node_modules/
 dist/
 public/
-*.log
-.DS_Store
 coverage/
-.env
-.env.local
+package-lock.json

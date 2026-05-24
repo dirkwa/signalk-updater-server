@@ -4,148 +4,28 @@
     <meta charset="utf-8" />
     <title>SignalK Updater</title>
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <link rel="icon" href="/app-icon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/app.css" />
+    <link rel="icon" type="image/svg+xml" href="/app-icon.svg" />
+    <!--
+      Pick the Bootstrap 5 color mode before React mounts so the first
+      paint is correct (avoids a flash of the wrong theme). Bootstrap
+      keys colors off [data-bs-theme] on <html>; setting it here means
+      we don't need a ThemeProvider for the basic light/dark flip.
+      An OS theme change re-runs the listener installed inside React.
+    -->
+    <script>
+      (function () {
+        try {
+          var prefersDark =
+            window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+          document.documentElement.setAttribute('data-bs-theme', prefersDark ? 'dark' : 'light');
+        } catch (_) {
+          document.documentElement.setAttribute('data-bs-theme', 'light');
+        }
+      })();
+    </script>
   </head>
   <body>
-    <header class="topbar">
-      <div class="brand">
-        <img src="/app-icon.svg" alt="" class="brand-icon" />
-        <h1>SignalK Updater</h1>
-        <span id="brand-version" class="brand-version" title="Engine container version">—</span>
-      </div>
-      <nav class="tabs">
-        <button type="button" class="tab is-active" data-tab="dashboard">Dashboard</button>
-        <button type="button" class="tab" data-tab="versions">Versions</button>
-        <button type="button" class="tab" data-tab="logs">Logs</button>
-      </nav>
-      <div class="actions">
-        <button type="button" id="refresh" class="btn btn-ghost" title="Reload state">
-          Refresh
-        </button>
-      </div>
-    </header>
-
-    <main>
-      <section id="view-dashboard" class="view">
-        <div class="grid">
-          <article class="card" data-card="signalk-server">
-            <header>
-              <h2>SignalK Server</h2>
-              <span class="state state-unknown" data-state>—</span>
-            </header>
-            <dl>
-              <dt>Image tag</dt>
-              <dd data-field="tag">—</dd>
-              <dt>Digest</dt>
-              <dd data-field="digest" class="mono">—</dd>
-              <dt>Started</dt>
-              <dd data-field="startedAt">—</dd>
-            </dl>
-            <footer>
-              <button type="button" class="btn" data-action="start">Start</button>
-              <button type="button" class="btn" data-action="restart">Restart</button>
-              <button type="button" class="btn btn-danger" data-action="stop">Stop</button>
-            </footer>
-          </article>
-
-          <article class="card" data-card="signalk-updater-server">
-            <header>
-              <h2>Updater</h2>
-              <span class="state state-unknown" data-state>—</span>
-            </header>
-            <dl>
-              <dt>Image tag</dt>
-              <dd data-field="tag">—</dd>
-              <dt>Digest</dt>
-              <dd data-field="digest" class="mono">—</dd>
-              <dt>Started</dt>
-              <dd data-field="startedAt">—</dd>
-              <dt>Update</dt>
-              <dd data-field="updateAvailable">—</dd>
-            </dl>
-            <footer>
-              <button type="button" class="btn" data-action="self-update" disabled>
-                Self-update
-              </button>
-            </footer>
-          </article>
-
-          <article class="card" data-card="signalk-doctor-server">
-            <header>
-              <h2>Doctor</h2>
-              <span class="state state-unknown" data-state>—</span>
-            </header>
-            <dl>
-              <dt>Image tag</dt>
-              <dd data-field="tag">—</dd>
-              <dt>Digest</dt>
-              <dd data-field="digest" class="mono">—</dd>
-              <dt>Started</dt>
-              <dd data-field="startedAt">—</dd>
-            </dl>
-            <footer>
-              <a class="btn" href="/doctor" id="open-doctor">Open Doctor Console</a>
-            </footer>
-          </article>
-        </div>
-
-        <p class="footnote">
-          Last check: <span id="last-check">never</span>
-          <span class="dot">·</span>
-          Runtime: <span id="runtime-kind">unknown</span>
-        </p>
-      </section>
-
-      <section id="view-versions" class="view is-hidden">
-        <div class="versions-toolbar">
-          <p class="footnote" id="versions-meta">Loading available tags…</p>
-          <button type="button" id="versions-check" class="btn btn-ghost">Refresh</button>
-        </div>
-        <div id="channels"></div>
-      </section>
-
-      <section id="view-logs" class="view is-hidden">
-        <div class="logs-toolbar">
-          <label>
-            Container
-            <select id="logs-container">
-              <option value="signalk-server">signalk-server</option>
-              <option value="signalk-updater-server">signalk-updater-server</option>
-              <option value="signalk-doctor-server">signalk-doctor-server</option>
-            </select>
-          </label>
-          <label>
-            Lines
-            <input type="number" id="logs-lines" min="50" max="5000" value="500" />
-          </label>
-          <span id="logs-status" class="logs-status">disconnected</span>
-          <button type="button" id="logs-pause" class="btn btn-ghost">Pause</button>
-          <button type="button" id="logs-clear" class="btn btn-ghost">Clear</button>
-        </div>
-        <div id="logs-output" class="logs">Connecting…</div>
-      </section>
-    </main>
-
-    <dialog id="confirm-modal">
-      <form method="dialog">
-        <h2 id="confirm-title">Confirm</h2>
-        <p id="confirm-body">Are you sure?</p>
-        <label class="checkbox">
-          <input type="checkbox" id="confirm-skip-backup" />
-          Skip pre-switch backup
-        </label>
-        <footer>
-          <button type="button" value="cancel" id="confirm-cancel" class="btn btn-ghost">
-            Cancel
-          </button>
-          <button type="button" value="ok" id="confirm-ok" class="btn btn-primary">Switch</button>
-        </footer>
-      </form>
-    </dialog>
-
-    <div id="toast" class="toast is-hidden" role="status" aria-live="polite"></div>
-
-    <script type="module" src="/app.js"></script>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
