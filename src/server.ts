@@ -10,8 +10,10 @@ import { registerVersionRoutes } from './routes/versions.js';
 import { registerSwitchRoutes } from './routes/switch.js';
 import { registerSelfRoutes } from './routes/self.js';
 import { registerDoctorRoutes } from './routes/doctor.js';
+import { registerUpdateRoutes } from './routes/updates.js';
 import { registerLogStreamRoutes } from './routes/logs-stream.js';
 import { registerHardwareRoutes } from './routes/hardware.js';
+import { startUpdateChecker } from './update-checker.js';
 
 // Built webapp directory inside the container image. The Vite build
 // emits to public/ at the repo root, and the Dockerfile copies that
@@ -36,8 +38,15 @@ export async function createServer(): Promise<FastifyInstance> {
   await registerSwitchRoutes(app);
   await registerSelfRoutes(app);
   await registerDoctorRoutes(app);
+  await registerUpdateRoutes(app);
   await registerLogStreamRoutes(app);
   await registerHardwareRoutes(app);
+
+  // Boot the daily GHCR check. Runs once immediately so the
+  // /api/updates/available cache is warm by the time the dashboard
+  // polls; the periodic refresh keeps the notification badge accurate
+  // for clients that never reload.
+  startUpdateChecker(app.log);
 
   // Serve the built React webapp at /. Without this, opening the
   // Updater Console URL in a browser hits Fastify's default 404 for

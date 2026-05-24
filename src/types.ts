@@ -72,6 +72,22 @@ export interface DoctorState {
   updateAvailable: boolean;
 }
 
+/** Single-engine slot inside the AvailableUpdates response. */
+export interface UpdateInfo {
+  currentTag: string;
+  availableTag?: string;
+  updateAvailable: boolean;
+}
+
+/** GET /api/updates/available — daily-refreshed snapshot of both peer
+ *  engines' current + latest stable tag. Powered by a server-side
+ *  setInterval so the badge stays accurate even when no client is open. */
+export interface AvailableUpdates {
+  updater: UpdateInfo;
+  doctor: UpdateInfo;
+  lastCheckedAt: string | null;
+}
+
 export type RuntimeKind = 'podman' | 'docker' | 'unknown';
 
 export interface HealthResponse {
