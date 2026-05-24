@@ -16,7 +16,13 @@ import { useApi } from '../hooks/useApi';
 import { useToast } from '../toast';
 import { useConfirm } from '../confirm';
 import { fmtTime, relTime } from '../time';
-import type { ContainerSnapshot, CurrentState, HealthResponse, SelfState } from '../types';
+import type {
+  ContainerSnapshot,
+  CurrentState,
+  DoctorState,
+  HealthResponse,
+  SelfState,
+} from '../types';
 
 const STATE_COLOR: Record<ContainerSnapshot['state'], string> = {
   running: 'success',
@@ -83,12 +89,16 @@ export function Dashboard() {
   const self = useApi<SelfState>((signal) => api('/api/self/state', { signal }), {
     intervalMs: 30000,
   });
+  const doctor = useApi<DoctorState>((signal) => api('/api/doctor/state', { signal }), {
+    intervalMs: 30000,
+  });
 
   const refreshAll = useCallback((): void => {
     void state.refresh();
     void health.refresh();
     void self.refresh();
-  }, [state, health, self]);
+    void doctor.refresh();
+  }, [state, health, self, doctor]);
 
   const lifecycle = useCallback(
     async (action: 'start' | 'stop' | 'restart'): Promise<void> => {
@@ -135,6 +145,32 @@ export function Dashboard() {
       );
     }
   }, [confirm, self.data?.availableTag, toast]);
+
+  const doctorUpdate = useCallback(async (): Promise<void> => {
+    const tag = doctor.data?.availableTag;
+    if (!tag) return;
+    const r = await confirm.ask({
+      title: `Update signalk-doctor-server to ${tag}?`,
+      body: 'The updater will pull the new image, rewrite the doctor Quadlet, restart it, and roll back if it does not come up healthy. The doctor is the recovery surface, so this is the safe place to drive the update from.',
+      okLabel: 'Update',
+    });
+    if (!r.confirmed) return;
+    try {
+      toast.show(`Updating signalk-doctor-server to ${tag}…`, 'info', 60000);
+      await api('/api/doctor/update', { method: 'POST', body: { tag } });
+      toast.show(`signalk-doctor-server updated to ${tag}`, 'ok');
+      setTimeout(() => {
+        void doctor.refresh();
+        void state.refresh();
+      }, 1500);
+    } catch (err) {
+      toast.show(
+        `Doctor update failed: ${err instanceof Error ? err.message : String(err)}`,
+        'err',
+        8000,
+      );
+    }
+  }, [confirm, doctor, state, toast]);
 
   const doctorUrl = `${window.location.protocol}//${window.location.hostname}:3004/`;
 
@@ -263,14 +299,32 @@ export function Dashboard() {
                     mono
                   />
                   <StartedCell startedAt={state.data.doctorServer.startedAt} />
+                  <SnapshotRow
+                    label="Update"
+                    value={
+                      doctor.data?.updateAvailable && doctor.data.availableTag
+                        ? `Available: ${doctor.data.availableTag}`
+                        : doctor.data
+                          ? `Up to date (${doctor.data.currentTag})`
+                          : '—'
+                    }
+                  />
                 </>
               ) : (
                 <Spinner size="sm" />
               )}
             </CardBody>
-            <div className="card-footer">
+            <div className="card-footer d-flex gap-2">
               <Button size="sm" color="secondary" outline tag="a" href={doctorUrl}>
                 Open Doctor Console
+              </Button>
+              <Button
+                size="sm"
+                color="primary"
+                disabled={!doctor.data?.updateAvailable}
+                onClick={() => void doctorUpdate()}
+              >
+                Update
               </Button>
             </div>
           </Card>

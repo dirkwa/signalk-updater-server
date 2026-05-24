@@ -48,6 +48,15 @@ export interface SelfState {
   updateAvailable: boolean;
 }
 
+// Mirror of the doctor's "what's running and what's available" view,
+// computed by the updater because it owns the GHCR check + the
+// Quadlet-rewrite path for the doctor's container.
+export interface DoctorState {
+  currentTag: string;
+  availableTag?: string;
+  updateAvailable: boolean;
+}
+
 export type Channel = 'stable' | 'beta' | 'master' | 'dirkwa';
 
 export interface Tag {
