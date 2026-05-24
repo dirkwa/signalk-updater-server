@@ -1,12 +1,12 @@
-import { resolveRuntime, safe } from './podman/client.js';
 import { listTags } from './ghcr.js';
-import { compareSemver } from './tagClassifier.js';
+import { compareSemver, isSemverTag } from './tagClassifier.js';
+import { readQuadletImageTag } from './quadlet-image-tag.js';
 import type { AvailableUpdates, UpdateInfo } from './types.js';
 
 const UPDATER_IMAGE = process.env.SELF_IMAGE ?? 'ghcr.io/dirkwa/signalk-updater-server';
 const DOCTOR_IMAGE = process.env.DOCTOR_IMAGE ?? 'ghcr.io/dirkwa/signalk-doctor-server';
-const UPDATER_CONTAINER = 'signalk-updater-server';
-const DOCTOR_CONTAINER = 'signalk-doctor-server';
+const UPDATER_QUADLET = 'signalk-updater-server.container';
+const DOCTOR_QUADLET = 'signalk-doctor-server.container';
 
 // 24h interval keeps GHCR API hits to ~2 per day. Even unauthenticated
 // pulls are well inside ghcr.io's per-IP budget (~50 req/h) at that rate.
@@ -23,16 +23,6 @@ let cache: AvailableUpdates = {
 
 let timer: ReturnType<typeof setInterval> | null = null;
 
-async function readRunningTag(container: string): Promise<string> {
-  const rt = await resolveRuntime();
-  if (!rt) return 'unknown';
-  const r = await safe(() => rt.client.getContainer(container).inspect());
-  if (!r.ok) return 'unknown';
-  const info = r.value as unknown as { Image?: string; ImageName?: string };
-  const image = info.ImageName ?? info.Image ?? '';
-  return image.includes(':') ? image.slice(image.lastIndexOf(':') + 1) : 'unknown';
-}
-
 async function deriveLatestStable(image: string): Promise<string | null> {
   const r = await listTags(image.replace(/^ghcr\.io\//, ''));
   if (!r.ok) return null;
@@ -41,16 +31,29 @@ async function deriveLatestStable(image: string): Promise<string | null> {
   return stable[0]?.name ?? null;
 }
 
-async function checkOne(image: string, container: string): Promise<UpdateInfo> {
+async function checkOne(image: string, quadlet: string): Promise<UpdateInfo> {
+  // currentTag now comes from the Quadlet, not dockerode inspect —
+  // see routes/self.ts for the digest-vs-tag rationale.
   const [currentTag, latest] = await Promise.all([
-    readRunningTag(container),
+    readQuadletImageTag(quadlet),
     deriveLatestStable(image),
   ]);
+  // See routes/doctor.ts for the floating-tag rationale — when the
+  // currentTag isn't semver-shaped (Quadlet pinned to :latest or
+  // :master-…), compareSemver returns 0 and we'd never surface an
+  // upgrade. Treat any concrete semver as an upgrade target in that
+  // case so the daily-check badge fires for installs stuck on a
+  // floating reference.
+  let updateAvailable = false;
+  if (latest !== null && currentTag !== 'unknown') {
+    updateAvailable = isSemverTag(currentTag)
+      ? compareSemver(latest, currentTag) > 0
+      : isSemverTag(latest);
+  }
   return {
     currentTag,
     ...(latest !== null ? { availableTag: latest } : {}),
-    updateAvailable:
-      latest !== null && currentTag !== 'unknown' && compareSemver(latest, currentTag) > 0,
+    updateAvailable,
   };
 }
 
@@ -69,8 +72,8 @@ interface MinimalLogger {
 
 export async function triggerCheck(log?: MinimalLogger): Promise<AvailableUpdates> {
   const [updater, doctor] = await Promise.all([
-    checkOne(UPDATER_IMAGE, UPDATER_CONTAINER),
-    checkOne(DOCTOR_IMAGE, DOCTOR_CONTAINER),
+    checkOne(UPDATER_IMAGE, UPDATER_QUADLET),
+    checkOne(DOCTOR_IMAGE, DOCTOR_QUADLET),
   ]);
   cache = { updater, doctor, lastCheckedAt: new Date().toISOString() };
   if (log) {

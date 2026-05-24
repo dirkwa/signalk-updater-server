@@ -25,6 +25,17 @@ export function classifyChannel(tag: string): Channel {
 const SEMVER_RE = /^v?(\d+)\.(\d+)\.(\d+)(?:-(beta|rc)\.(\d+))?$/i;
 
 /**
+ * Does `tag` look like a semver release we can ordered-compare?
+ * Used by the update-state routes to decide whether `compareSemver`
+ * is meaningful — when the running Quadlet pins a floating tag like
+ * `latest` or `master-abc1234`, the comparison is undefined and the
+ * caller treats any concrete semver as an upgrade target.
+ */
+export function isSemverTag(tag: string): boolean {
+  return SEMVER_RE.test(tag);
+}
+
+/**
  * Compare two semver-ish tags. Returns >0 if a is newer, <0 if b is newer,
  * 0 if equal or incomparable.
  */
