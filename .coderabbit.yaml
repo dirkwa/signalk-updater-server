@@ -1,0 +1,360 @@
+language: en-US
+
+reviews:
+  profile: assertive
+  auto_review:
+    enabled: true
+    auto_incremental_review: true
+    drafts: false
+    ignore_title_keywords:
+      - 'chore(release):'
+      - 'chore(deps):'
+      - 'chore(deps-dev):'
+      - '[skip review]'
+      - 'WIP'
+    ignore_usernames:
+      - 'release-please[bot]'
+      - 'renovate[bot]'
+      - 'dependabot[bot]'
+      - 'github-actions[bot]'
+
+  path_filters:
+    - '!**/package-lock.json'
+    - '!**/yarn.lock'
+    - '!**/pnpm-lock.yaml'
+    - '!**/*.min.js'
+    - '!**/*.min.css'
+    - '!**/dist/**'
+    - '!**/public/**'
+    - '!**/build/**'
+    - '!**/node_modules/**'
+
+  high_level_summary_instructions: |
+    Write summaries in present tense. Describe what the code does, not what
+    it did. Skip filler like "This PR" — go straight to the change.
+
+  path_instructions:
+    - path: '**/*'
+      instructions: |
+        ## Scope
+
+        Focus on files changed since `master`. Think about how changes
+        interact with the rest of the stack, not just the diff in isolation.
+
+        signalk-updater-server is the **peer engine container** for
+        signalk-server image lifecycle, version switching, self-update,
+        hardware passthrough, and container orchestration. It runs
+        alongside (NOT inside) `signalk-server` and survives signalk-
+        server crashes. The thin-shell plugin is in
+        [signalk-updater](https://github.com/dirkwa/signalk-updater).
+
+        - **Not a SignalK plugin.** Standalone Node 24 container,
+          Fastify backend, started by systemd-user via the Quadlet
+          that the bash installer drops at
+          `~/.config/containers/systemd/signalk-updater-server.container`.
+        - **Code twin of signalk-doctor-server** at the skeleton level
+          (same Fastify factory, same `src/podman/client.ts` shape,
+          same `src/errors.ts`, same Dockerfile pattern). Lifting
+          helpers between the two is expected. The updater is the
+          mutating half; the doctor is the read-mostly half.
+        - **Webapp (`webapp/`)** is **React 19 + Vite + reactstrap +
+          Bootstrap 5**, intentionally — see "Webapp stack" below.
+
+        ## Cross-cutting requirements (CC-1..CC-6)
+
+        These are derived from the master plan; do not relax them
+        without updating that plan first.
+
+        - **CC-1 Snapshot every Quadlet write.** Before writing to
+          `/quadlets/*.container`, snapshot the existing file under
+          `~/.signalk-doctor/snapshots/<timestamp>-<filename>`. Keep
+          last 10 per file; **never prune `last-good`**. Flag any
+          code that writes to `/quadlets/*.container` without a prior
+          snapshot through `src/quadlet/rewriter.ts`.
+        - **CC-2 Bearer-token auth on mutating routes; token-or-
+          localhost on read-only routes.** This is DIFFERENT from the
+          doctor's policy (doctor's read-only routes are
+          unauthenticated). Here, every mutating route
+          (`POST /api/versions/switch`, `/rollback`, `/api/self/update`,
+          `/api/signalk/{start,stop,restart}`, `/api/hardware/apply`)
+          requires the bearer token via `requireToken` preHandler.
+          Read-only routes (`GET /api/state`, `/api/versions`,
+          `/api/health`, log streams) allow token-or-localhost. Flag
+          any mutating route without `preHandler: requireToken`. Flag
+          any read-only route that hard-requires the token (locks out
+          the local plugin proxy).
+        - **CC-3 Twin with the host recovery script.** The host-resident
+          `~/.local/bin/signalk-recovery` (in
+          [signalk-universal-installer](https://github.com/dirkwa/signalk-universal-installer))
+          is the SSH-only safety net for when this container is
+          itself broken. Keep semantics aligned for the updater units
+          this container touches.
+        - **CC-4 Restart policy.** Quadlets emit `Restart=on-failure`
+          with `StartLimitIntervalSec=300` and `StartLimitBurst=5`.
+          `Restart=always` is banned. Flag any quadlet snippet that
+          uses `Restart=always`.
+        - **CC-5 Single-writer mutex.** `~/.signalk-updater/operation.lock`
+          serializes switch / self-update / hardware-apply across this
+          container AND the doctor container. New mutating operations
+          MUST go through `withMutex(...)`. Flag mutation paths that
+          bypass it.
+        - **CC-6 Categorized errors at the dockerode boundary.** Every
+          dockerode call goes through `src/podman/client.ts` `safe()`
+          which classifies errors into network / auth / disk /
+          permission / not-found / unknown. UI surfaces `userMessage`,
+          never raw error text. Flag direct dockerode calls outside
+          `src/podman/client.ts` that bypass `safe()`.
+
+        ## ESM / TypeScript strict / Node 24
+
+        - `"type": "module"` — relative imports use the `.js` suffix
+          (NodeNext resolution). Do not suggest dropping it.
+        - tsconfig is strict, with `noUncheckedIndexedAccess`,
+          `noImplicitReturns`, `noImplicitOverride`, and
+          `noFallthroughCasesInSwitch`. Avoid `any` (it's an ESLint
+          `error`, not a `warn`). Prefer narrowing with `unknown` +
+          runtime checks at boundaries (HTTP request bodies, child-
+          process stdout, dockerode responses).
+        - Node `>= 24` per `engines`. Native fetch is fine. Codebase
+          convention: named imports from `fs/promises`. Don't suggest
+          the `node:` prefix — the project deliberately doesn't use it.
+
+        ## Webapp stack (React 19 + Vite + reactstrap + Bootstrap 5)
+
+        The webapp under `webapp/` is React 19 served from `public/`
+        (Vite build output). This is a deliberate choice and differs
+        from `signalk-updater`'s vanilla-TS redirect shell.
+
+        - **Don't suggest replacing React with vanilla JS or "simpler"
+          frameworks.** The thin-shell plugin (signalk-updater) is
+          deliberately vanilla; this engine's console is deliberately
+          React. Different code, different scope.
+        - **Theming is OS-driven via `data-bs-theme`.** A small inline
+          script in `webapp/index.html` reads
+          `prefers-color-scheme: dark` and sets
+          `<html data-bs-theme>` before React mounts. A
+          `useThemeSync` hook keeps it in sync if the OS theme flips
+          at runtime. Bootstrap and reactstrap respect the attribute
+          automatically.
+          - **Don't suggest a manual light/dark toggle** unless
+            explicitly requested.
+          - **Don't suggest fetching the SignalK admin CSS** — this
+            server runs standalone on port 3003, not embedded in the
+            SignalK admin UI on port 3000. Bundling Bootstrap is
+            correct here.
+        - **Use semantic reactstrap color props** (`color="primary"`,
+          `"danger"`, `"warning"`, etc.). Don't hardcode hex colors
+          — they break dark mode.
+        - **Use Bootstrap utility classes** (`d-flex`, `gap-2`,
+          `text-muted`, `mb-3`, `font-monospace`, etc.) instead of
+          inline styles or custom CSS. The bundled Bootstrap CSS has
+          them.
+        - **No new UI dependencies without justification.** The
+          existing stack (`react`, `react-dom`, `reactstrap`,
+          `bootstrap`) is intentionally tight.
+
+        ## Webapp / engine type drift
+
+        `webapp/src/types.ts` mirrors the engine's REST shapes from
+        `src/types.ts`. The two files MUST stay structurally
+        equivalent — field names, optionality, and string-literal
+        unions have to match exactly.
+
+        - Cosmetic differences are intentional and documented at the
+          top of `webapp/src/types.ts`. Specifically: `ContainerState`
+          is named here instead of inlined, and `UpdaterSnapshot` is
+          an interface extending `ContainerSnapshot` instead of an
+          intersection. Don't flag these as drift.
+        - If a PR changes a shape in `src/types.ts`, the matching
+          change MUST appear in `webapp/src/types.ts` in the same PR.
+        - Do not suggest importing `src/types.ts` from the webapp via
+          a path mapping. The webapp build deliberately doesn't pull
+          in Node-only imports along with the types.
+
+        ## Vitest split (server in node, webapp in jsdom)
+
+        `vitest.config.ts` declares two projects (`server` and
+        `webapp`) because the two test suites have different
+        environments and setup files.
+
+        - **Don't suggest consolidating into a single project.** The
+          server suite would pay for jsdom startup and the webapp
+          suite would lose `@testing-library/jest-dom` matchers.
+        - Webapp tests must `import '@testing-library/jest-dom/vitest'`
+          (handled by `webapp/test-setup.ts`).
+        - When a webapp test stubs `globalThis.fetch`, it must snapshot
+          the original at module load and restore it in `afterEach`
+          (`vi.restoreAllMocks()` does NOT undo a direct global
+          assignment). See `webapp/src/views/Dashboard.test.tsx` and
+          `webapp/src/views/Versions.test.tsx` for the pattern.
+
+        ## SSE log broker drain
+
+        `src/log-stream-broker.ts` fans a single dockerode follow-
+        stream out to multiple subscribers with a ring buffer for
+        backfill. The drain in `src/routes/logs-stream.ts` does
+        string-equality dedup between the history slice and the live
+        buffer to suppress duplicates at the handoff boundary.
+
+        - The trade-off is documented in the source: string-equality
+          dedup can over-skip when a container legitimately emits the
+          same line twice in rapid succession; the bullet-proof fix
+          would need sequence IDs from the broker, not worth the
+          complexity given the sub-millisecond handoff window. Don't
+          re-litigate.
+        - The browser EventSource can't set headers, so SSE auth
+          relies on the engine's PublishPort being trusted (any
+          client that crossed it already cleared the auth boundary).
+          This is documented in `webapp/src/views/Logs.tsx` and
+          `src/routes/logs-stream.ts`. Don't suggest adding an
+          `Authorization` header to the EventSource — there's no way.
+
+        ## Self-update is fire-and-forget exit
+
+        `POST /api/self/update` (`src/routes/self.ts`) pulls the new
+        image, rewrites its own Quadlet, calls `daemon-reload`,
+        flushes the HTTP response, and then schedules `process.exit(0)`
+        500ms later. systemd's `Restart=on-failure` then restarts the
+        container on the new tag.
+
+        - **Don't flag the `process.exit(0)` after a successful
+          response** — this is the documented restart path. The
+          comment in `src/routes/self.ts` explains the ordering.
+        - Schedule the exit AFTER the response is sent (not in
+          parallel) so the browser gets `{ ok: true, exiting: true }`
+          before the connection drops.
+
+        ## Quadlet rewriter
+
+        `src/quadlet/rewriter.ts` is the ONLY place that writes
+        Quadlet files. It snapshots first (CC-1), writes via temp
+        file + fsync + rename + fsync(dir), and exposes the previous
+        image string for rollback.
+
+        - New code that needs to mutate Quadlets MUST go through this
+          rewriter, not call `writeFile` directly.
+        - `last-good.json` is owned by this rewriter's snapshot
+          discipline — don't suggest separate persistence mechanisms
+          for last-known-good state.
+
+        ## podman / dockerode
+
+        - `src/podman/client.ts` is the only place that talks to the
+          podman socket. New code that needs container info should go
+          through this wrapper, not instantiate a fresh `Dockerode`.
+        - Runtime detection (podman vs docker fallback, socket
+          discovery) lives in this wrapper. Don't duplicate it.
+        - All dockerode errors funnel through `safe()` into
+          categorized errors (CC-6).
+
+        ## DBus / systemd-user
+
+        - The container shells out to `busctl --user --address` to
+          talk to the host user-bus mounted at `/host/dbus`. We do
+          NOT run systemd inside the container; we only use its
+          client tool.
+        - DBus calls trigger systemd-user operations (daemon-reload,
+          unit start/stop/restart) and must respect CC-5 (the shared
+          operation lock) and CC-2 (auth on the route that triggers
+          them).
+
+        ## Tag classification & channels
+
+        `src/tagClassifier.ts` classifies signalk-server tags into
+        `stable | beta | master | dirkwa` channels.
+
+        - **Don't suggest removing or merging channels.** The webapp
+          orders them in this priority; the engine groups responses
+          accordingly. Each channel has a user-facing description in
+          `webapp/src/views/Versions.tsx`.
+        - Tag comparison via the semver helper in `tagClassifier.ts`
+          guards `parseInt` against undefined capture groups
+          (`noUncheckedIndexedAccess`); don't suggest replacing the
+          guards with `!` non-null assertions.
+
+        ## Echo comments
+
+        Flag any comment that merely restates what the code already says.
+        Examples to flag:
+
+        - `// Read the token` above `await readFile(tokenPath, 'utf8')`
+        - `// Probe podman` above a Dockerode `ping()` call
+        - `// Render the dashboard` above a JSX block
+
+        Replace with comments explaining *why*, not *what*. Or delete.
+
+        ## Documentation drift risk
+
+        Flag any `.md` file that contains:
+
+        - Specific code snippets, function signatures, or config values
+          likely to fall out of sync as code evolves.
+        - Step-by-step build/development instructions that duplicate
+          or shadow the code itself.
+        - Implementation status, progress markers ("Phase 4: …"),
+          "currently implemented as X" wording. Build narratives
+          belong in PR descriptions, not in repo docs.
+
+        Architecture decisions, conceptual design rationale, and the
+        CC-1..CC-6 cross-cutting requirements table are fine — those
+        are load-bearing.
+
+        ## Leftover crumbs from intermediate commits
+
+        Flag references in the current diff to symbols, files, or
+        approaches that no longer exist on this branch — old function
+        names in comments, dangling imports, stale TODOs from a
+        superseded approach, etc.
+
+        ## Unchecked items in test plans
+
+        If the PR description has a checklist with unchecked items,
+        flag it. Either the work isn't done, or the unchecked items
+        should be removed.
+
+        ## Commit / PR conventions
+
+        - Branch names use **hyphens**, never slashes.
+        - Angular conventional commits: `<type>(<scope>): <subject>`.
+          Subject ≤ 50 chars, imperative mood, no period.
+        - One logical change per commit and per PR.
+        - **No AI attribution** in commits, PR bodies, or code. Don't
+          mention Claude, AI, or add `Co-Authored-By` trailers.
+        - **No version bumps** in feature/fix PRs. Versions are bumped
+          in dedicated `chore(release):` PRs only when the user
+          explicitly asks.
+        - PR descriptions: no checkboxes. "Tested" lists what was
+          actually verified, not what's planned.
+        - No manual CHANGELOG.md edits — CI auto-generates release
+          notes from the publish-image workflow.
+
+        ## What NOT to flag
+
+        These are intentional:
+
+        - Token-or-localhost on read-only routes (state, versions,
+          health, log streams) — see CC-2 above. Don't suggest
+          tightening these to bearer-only.
+        - Snapshot-before-write on every Quadlet mutation — see CC-1.
+        - `Restart=on-failure` instead of `Restart=always` in Quadlet
+          snippets — required by CC-4.
+        - The shared `~/.signalk-updater/operation.lock` across this
+          container and signalk-doctor-server — that's the single-
+          writer mutex (CC-5).
+        - The React + reactstrap + Bootstrap webapp stack — see
+          "Webapp stack" above. Don't push for a different framework
+          or to drop React for vanilla.
+        - The OS-driven `data-bs-theme` theming — don't suggest a
+          manual toggle or fetching the SignalK admin CSS.
+        - The vitest projects split (server vs webapp) — see "Vitest
+          split" above. Don't suggest consolidating.
+        - The webapp `types.ts` mirror of `src/types.ts` with the
+          documented cosmetic differences — see "Webapp / engine type
+          drift" above.
+        - `process.exit(0)` after `POST /api/self/update` responds —
+          see "Self-update is fire-and-forget exit" above.
+        - The SSE log broker drain's string-equality dedup — see "SSE
+          log broker drain" above.
+        - The "code twin" overlap with signalk-doctor-server (same
+          Fastify factory, same `podman/client.ts`, same `errors.ts`,
+          same Dockerfile pattern) — deliberate per AGENTS.md.
