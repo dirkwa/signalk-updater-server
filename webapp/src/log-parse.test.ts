@@ -14,6 +14,25 @@ describe('parseLogLine', () => {
     expect(r.time).toBe(new Date(1700000000000).toISOString());
   });
 
+  it('decodes pino JSON with an ISO-string time without falling back', () => {
+    const r = parseLogLine('{"level":30,"time":"2026-05-24T03:30:00Z","msg":"hi"}');
+    expect(r.level).toBe('info');
+    expect(r.message).toBe('hi');
+    expect(r.time).toBe(new Date('2026-05-24T03:30:00Z').toISOString());
+  });
+
+  it('decodes pino JSON with a numeric-string time as epoch ms', () => {
+    const r = parseLogLine('{"level":30,"time":"1700000000000","msg":"hi"}');
+    expect(r.time).toBe(new Date(1700000000000).toISOString());
+  });
+
+  it('keeps a JSON parse on track but yields time=null when the time is garbage', () => {
+    const r = parseLogLine('{"level":30,"time":"not-a-date","msg":"hi"}');
+    expect(r.level).toBe('info');
+    expect(r.message).toBe('hi');
+    expect(r.time).toBeNull();
+  });
+
   it('appends non-reserved fields to the message', () => {
     const r = parseLogLine(
       '{"level":40,"time":1700000000000,"msg":"oops","reqId":"req-1","err":{"code":42}}',

@@ -45,11 +45,21 @@ export function parseLogLine(raw: string): ParsedLogLine {
       } else if (typeof lvlNum === 'string') {
         level = lvlNum;
       }
+      // pino emits epoch-ms numbers, but some consumers (and our own
+      // hand-rolled lines in places) hand us either a numeric string or
+      // an ISO string. Coerce numerics via Number, ISO strings via the
+      // Date string constructor, and guard against Invalid Date so an
+      // unparseable value sets time=null instead of throwing through
+      // the outer catch and silently dropping the whole JSON parse.
       const timeRaw = obj.time;
-      const time =
-        typeof timeRaw === 'number' || typeof timeRaw === 'string'
-          ? new Date(Number(timeRaw)).toISOString()
-          : null;
+      let time: string | null = null;
+      if (typeof timeRaw === 'number' || (typeof timeRaw === 'string' && /^\d+$/.test(timeRaw))) {
+        const d = new Date(Number(timeRaw));
+        if (!Number.isNaN(d.getTime())) time = d.toISOString();
+      } else if (typeof timeRaw === 'string') {
+        const d = new Date(timeRaw);
+        if (!Number.isNaN(d.getTime())) time = d.toISOString();
+      }
       const msgRaw = obj.msg ?? obj.message;
       const msg = typeof msgRaw === 'string' ? msgRaw : '';
       const extras = Object.entries(obj)

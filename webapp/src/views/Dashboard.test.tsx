@@ -5,6 +5,11 @@ import { ToastProvider } from '../toast';
 import { ConfirmProvider } from '../confirm';
 import type { CurrentState, HealthResponse, SelfState } from '../types';
 
+// vi.restoreAllMocks() resets vi.fn spies but doesn't undo a direct
+// globalThis.fetch assignment. Snapshot and restore by hand so a
+// leaked mock can't bleed into a later test in the same file.
+const originalFetch = globalThis.fetch;
+
 function mockFetch(map: Record<string, unknown>): void {
   globalThis.fetch = vi.fn(async (input: Parameters<typeof fetch>[0]) => {
     const url =
@@ -70,6 +75,7 @@ describe('Dashboard', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    globalThis.fetch = originalFetch;
   });
 
   it('renders the three container cards', async () => {
