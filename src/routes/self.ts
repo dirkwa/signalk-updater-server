@@ -5,6 +5,7 @@ import { withMutex, MutexBusyError } from '../mutex.js';
 import { requireToken } from '../auth.js';
 import { listTags } from '../ghcr.js';
 import { resolveRuntime, safe } from '../podman/client.js';
+import { readQuadletImageTag } from '../quadlet-image-tag.js';
 
 const SELF_IMAGE = process.env.SELF_IMAGE ?? 'ghcr.io/dirkwa/signalk-updater-server';
 const SELF_QUADLET = 'signalk-updater-server.container';
@@ -16,17 +17,14 @@ interface SelfState {
   updateAvailable: boolean;
 }
 
-async function readSelfTag(): Promise<string> {
-  const rt = await resolveRuntime();
-  if (!rt) return 'unknown';
-  try {
-    const c = rt.client.getContainer('signalk-updater-server');
-    const info = (await c.inspect()) as unknown as { Image?: string; ImageName?: string };
-    const image = info.ImageName ?? info.Image ?? '';
-    return image.includes(':') ? image.slice(image.lastIndexOf(':') + 1) : 'unknown';
-  } catch {
-    return 'unknown';
-  }
+// Read the tag the updater's Quadlet pins to. The previous design used
+// dockerode inspect on the running container, but when the Quadlet was
+// `:latest` the running image's Image field was a sha256 digest with
+// no path back to a semver — the UI then compared a digest against a
+// semver and silently greyed out the Update button (incident
+// 2026-05-25). The Quadlet is what the operator intended; trust that.
+function readSelfTag(): Promise<string> {
+  return readQuadletImageTag(SELF_QUADLET);
 }
 
 export async function registerSelfRoutes(app: FastifyInstance): Promise<void> {
