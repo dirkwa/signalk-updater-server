@@ -38,4 +38,17 @@ describe('src/routes/self.ts self-update restart path', () => {
     const src = await readFile(SELF_TS, 'utf8');
     expect(src).toMatch(/restartUnit\(\s*SELF_UNIT\s*\)/);
   });
+
+  it('sends the success response BEFORE the restartUnit call', async () => {
+    // Order matters: restartUnit triggers a SIGTERM mid-call, so the
+    // 200 response must be flushed first or the client sees a reset.
+    // Without this assertion the previous three checks would all pass
+    // even if a refactor reordered the two statements.
+    const src = await readFile(SELF_TS, 'utf8');
+    const sendIdx = src.search(/reply\.send\(\{[^}]*exiting:\s*true/);
+    const restartIdx = src.search(/restartUnit\(\s*SELF_UNIT\s*\)/);
+    expect(sendIdx).toBeGreaterThan(-1);
+    expect(restartIdx).toBeGreaterThan(-1);
+    expect(sendIdx).toBeLessThan(restartIdx);
+  });
 });
