@@ -3,7 +3,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import { Versions } from './Versions';
 import { ToastProvider } from '../toast';
 import { ConfirmProvider } from '../confirm';
-import type { CurrentState, VersionsResponse } from '../types';
+import type { CurrentState, VersionSettings, VersionsResponse } from '../types';
 
 // vi.restoreAllMocks() resets vi.fn spies but doesn't undo a direct
 // globalThis.fetch assignment. Snapshot and restore by hand so a
@@ -34,15 +34,32 @@ const sampleVersions: VersionsResponse = {
         channel: 'stable',
         digest: 'sha256:aaa111',
         pushedAt: '2026-05-20T00:00:00Z',
+        isLocal: true,
       },
       {
         name: 'v2.23.1',
         channel: 'stable',
         digest: 'sha256:bbb222',
         pushedAt: '2026-05-15T00:00:00Z',
+        isLocal: true,
+      },
+      {
+        name: 'v2.22.0',
+        channel: 'stable',
+        digest: 'sha256:ccc333',
+        pushedAt: '2026-05-01T00:00:00Z',
+        isLocal: false,
       },
     ],
-    beta: [],
+    beta: [
+      {
+        name: 'v2.25.0-beta.1',
+        channel: 'beta',
+        digest: 'sha256:beta1',
+        pushedAt: '2026-05-21T00:00:00Z',
+        isLocal: false,
+      },
+    ],
     master: [],
     dirkwa: [],
   },
@@ -54,6 +71,8 @@ const sampleState: CurrentState = {
   doctorServer: { tag: 'v0.3.0', digest: 'sha256:dca', state: 'stopped' },
   lastCheck: new Date().toISOString(),
 };
+
+const defaultSettings: VersionSettings = { showBeta: false, showMaster: false };
 
 function renderVersions() {
   return render(
@@ -67,7 +86,11 @@ function renderVersions() {
 
 describe('Versions', () => {
   beforeEach(() => {
-    mockFetch({ '/api/versions': sampleVersions, '/api/state': sampleState });
+    mockFetch({
+      '/api/versions': sampleVersions,
+      '/api/state': sampleState,
+      '/api/versions/settings': defaultSettings,
+    });
   });
 
   afterEach(() => {
@@ -75,29 +98,39 @@ describe('Versions', () => {
     globalThis.fetch = originalFetch;
   });
 
-  it('renders the populated stable channel and skips empty channels', async () => {
+  it('renders the populated stable channel and hides beta by default', async () => {
     renderVersions();
     expect(await screen.findByText('stable')).toBeInTheDocument();
+    // beta has tags but the showBeta setting is false → channel card hidden.
     expect(screen.queryByText('beta')).not.toBeInTheDocument();
     expect(screen.queryByText('master')).not.toBeInTheDocument();
   });
 
-  it('marks the current tag as "in use" and disables its Switch button', async () => {
+  it('marks the current tag as in use', async () => {
     renderVersions();
     await screen.findByText('stable');
-    // Wait for the state fetch to populate the current-tag badge.
     await waitFor(() => {
       expect(screen.getByText('current')).toBeInTheDocument();
     });
-    const inUseBtn = screen.getByRole('button', { name: /in use/i });
-    expect(inUseBtn).toBeDisabled();
+    // The current row renders an "In use" span, not a button. Match the
+    // exact action-cell text — "in use" appears in the channel
+    // description ("recommended for boats in use") too.
+    expect(await screen.findByText('In use')).toBeInTheDocument();
   });
 
-  it('lists older tags with a Switch button enabled', async () => {
+  it('offers Switch on locally-cached non-current tags', async () => {
     renderVersions();
     await screen.findByText('v2.23.1');
-    const switchBtns = screen.getAllByRole('button', { name: /^switch$/i });
+    const switchBtns = await screen.findAllByRole('button', { name: /^switch$/i });
     expect(switchBtns.length).toBeGreaterThanOrEqual(1);
     expect(switchBtns[0]).not.toBeDisabled();
+  });
+
+  it('offers Pull on remote-only tags', async () => {
+    renderVersions();
+    await screen.findByText('v2.22.0');
+    const pullBtns = await screen.findAllByRole('button', { name: /^pull$/i });
+    expect(pullBtns.length).toBeGreaterThanOrEqual(1);
+    expect(pullBtns[0]).not.toBeDisabled();
   });
 });

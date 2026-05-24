@@ -81,11 +81,53 @@ export interface Tag {
   digest: string;
   pushedAt: string;
   size?: number;
+  /** True when an image with this tag is already in the local podman
+   *  cache. Server-annotated so the UI can render Pull-vs-Switch
+   *  without a second roundtrip. */
+  isLocal?: boolean;
 }
 
 export interface VersionsResponse {
   cachedAt: string;
   channels: Record<Channel, Tag[]>;
+}
+
+export interface VersionSettings {
+  showBeta: boolean;
+  showMaster: boolean;
+}
+
+export interface LocalImage {
+  tag: string;
+  digest: string;
+  created: string;
+  size: number;
+}
+
+export interface LocalImagesResponse {
+  images: LocalImage[];
+  totalSize: number;
+}
+
+export type SwitchStage =
+  | 'idle'
+  | 'pulling'
+  | 'trial'
+  | 'rewriting-quadlet'
+  | 'daemon-reload'
+  | 'restarting'
+  | 'health-poll'
+  | 'rolling-back'
+  | 'complete'
+  | 'failed';
+
+export interface SwitchProgressEvent {
+  stage: SwitchStage;
+  message?: string;
+  to?: string;
+  from?: string;
+  error?: string;
+  at: string;
 }
 
 export interface SwitchResult {
