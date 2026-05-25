@@ -3,6 +3,7 @@ import { rewriteQuadletImage, writeLastGood } from './quadlet/rewriter.js';
 import { daemonReload, restartUnit } from './dbus/systemd-user.js';
 import { withMutex } from './mutex.js';
 import { pollHealth, pullImage, trialRun } from './container-ops.js';
+import { invalidate as invalidateUpdatesCache } from './update-checker.js';
 import type { SwitchResult } from './types.js';
 
 // Same shape as switch-service.ts but pointed at the doctor's image,
@@ -125,6 +126,12 @@ async function doDoctorSwitch(input: DoctorSwitchInput): Promise<SwitchResult> {
     image: newImage,
     snapshotPath,
   }).catch(() => undefined);
+
+  // 7. Bust the update-checker cache: the doctor's RuntimeIdentity
+  // just moved, so the next /api/updates/available read shouldn't be
+  // racing against a stale "updateAvailable: true" from before the
+  // switch. Fire-and-forget; the refresh happens in the background.
+  invalidateUpdatesCache();
 
   return {
     ok: true,

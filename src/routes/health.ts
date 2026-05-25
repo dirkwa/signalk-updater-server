@@ -29,6 +29,14 @@ async function loadVersion(): Promise<void> {
 }
 void loadVersion();
 
+/** Returns the engine's own package.json version, or 'unknown' if the
+ *  package.json wasn't readable at boot. Exported so the RuntimeIdentity
+ *  resolver in src/runtime-version.ts can answer "what version am I?"
+ *  for our own container without an HTTP round-trip to ourselves. */
+export function getSelfVersion(): string {
+  return cachedVersion;
+}
+
 export async function registerHealthRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/health', async (): Promise<HealthResponse> => {
     const runtime = await resolveRuntime();

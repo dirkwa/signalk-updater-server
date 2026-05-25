@@ -1,13 +1,27 @@
 import { listTags } from './ghcr.js';
-import { compareSemver, isSemverTag } from './tagClassifier.js';
-import { readQuadletImageTag } from './quadlet-image-tag.js';
+import { compareSemver } from './tagClassifier.js';
 import { fetchDriftReport } from './drift-client.js';
+import { getRuntimeIdentity, type VersionTarget } from './runtime-version.js';
+import { getSelfVersion } from './routes/health.js';
 import type { AvailableUpdates, UpdateInfo } from './types.js';
 
 const UPDATER_IMAGE = process.env.SELF_IMAGE ?? 'ghcr.io/dirkwa/signalk-updater-server';
 const DOCTOR_IMAGE = process.env.DOCTOR_IMAGE ?? 'ghcr.io/dirkwa/signalk-doctor-server';
-const UPDATER_QUADLET = 'signalk-updater-server.container';
-const DOCTOR_QUADLET = 'signalk-doctor-server.container';
+
+// Resolver targets. The updater reads its own version from the cached
+// package.json (no self-HTTP). The doctor goes over the host loopback
+// to its `/api/health`.
+const UPDATER_TARGET: VersionTarget = {
+  container: 'signalk-updater-server',
+  quadletName: 'signalk-updater-server.container',
+  selfVersion: getSelfVersion,
+};
+
+const DOCTOR_TARGET: VersionTarget = {
+  container: 'signalk-doctor-server',
+  quadletName: 'signalk-doctor-server.container',
+  healthUrl: process.env.DOCTOR_HEALTH_URL ?? 'http://127.0.0.1:3004/api/health',
+};
 
 // 24h interval keeps GHCR API hits to ~2 per day. Even unauthenticated
 // pulls are well inside ghcr.io's per-IP budget (~50 req/h) at that rate.
@@ -32,27 +46,24 @@ async function deriveLatestStable(image: string): Promise<string | null> {
   return stable[0]?.name ?? null;
 }
 
-async function checkOne(image: string, quadlet: string): Promise<UpdateInfo> {
-  // currentTag now comes from the Quadlet, not dockerode inspect —
-  // see routes/self.ts for the digest-vs-tag rationale.
-  const [currentTag, latest] = await Promise.all([
-    readQuadletImageTag(quadlet),
+async function checkOne(image: string, target: VersionTarget): Promise<UpdateInfo> {
+  // currentTag in the response is the RuntimeIdentity version (a clean
+  // semver from /api/health or the OCI image label). When neither
+  // source can answer, we fall back to the OperatorIntent label string
+  // (the Quadlet's tag) so the field stays human-meaningful — but
+  // updateAvailable stays false in that case because comparing a
+  // floating tag like `:latest` against a semver is undefined.
+  const [identity, latest] = await Promise.all([
+    getRuntimeIdentity(target),
     deriveLatestStable(image),
   ]);
-  // See routes/doctor.ts for the floating-tag rationale — when the
-  // currentTag isn't semver-shaped (Quadlet pinned to :latest or
-  // :master-…), compareSemver returns 0 and we'd never surface an
-  // upgrade. Treat any concrete semver as an upgrade target in that
-  // case so the daily-check badge fires for installs stuck on a
-  // floating reference.
-  let updateAvailable = false;
-  if (latest !== null && currentTag !== 'unknown') {
-    updateAvailable = isSemverTag(currentTag)
-      ? compareSemver(latest, currentTag) > 0
-      : isSemverTag(latest);
-  }
+  const updateAvailable =
+    identity.version !== null && latest !== null && compareSemver(latest, identity.version) > 0;
   return {
-    currentTag,
+    // Wire field name stays "currentTag" for backward compat with the
+    // pre-refactor webapp; the value is now an honest semver when the
+    // engine could report it.
+    currentTag: identity.version ?? 'unknown',
     ...(latest !== null ? { availableTag: latest } : {}),
     updateAvailable,
   };
@@ -77,8 +88,8 @@ export async function triggerCheck(log?: MinimalLogger): Promise<AvailableUpdate
   // nothing to show yet). That keeps a slow / down doctor from blocking
   // the engine check that drives the badge for the engines themselves.
   const [updater, doctor, drift] = await Promise.all([
-    checkOne(UPDATER_IMAGE, UPDATER_QUADLET),
-    checkOne(DOCTOR_IMAGE, DOCTOR_QUADLET),
+    checkOne(UPDATER_IMAGE, UPDATER_TARGET),
+    checkOne(DOCTOR_IMAGE, DOCTOR_TARGET),
     fetchDriftReport(),
   ]);
   cache = {
@@ -108,6 +119,32 @@ export async function triggerCheck(log?: MinimalLogger): Promise<AvailableUpdate
 
 export function getCachedUpdates(): AvailableUpdates {
   return cache;
+}
+
+/**
+ * Bust the cache and trigger an immediate refresh. Called after a
+ * successful self-update / doctor-update — the just-completed flow
+ * means our knowledge of RuntimeIdentity moved, so the staleness
+ * window the 24h interval otherwise leaves becomes a non-issue. The
+ * call is fire-and-forget; the next `/api/updates/available` read
+ * either races the in-flight refresh (which is fine — it returns the
+ * previous cache during the request) or sees the new value.
+ *
+ * Safe even when called immediately before the DBus restart in
+ * self-update — the refresh will either complete pre-shutdown or be
+ * cut short by the SIGTERM that follows `restartUnit`; either way
+ * the cache the next boot reads is fresh because the next boot's
+ * first action is its own boot-time refresh in startUpdateChecker.
+ */
+export function invalidate(log?: MinimalLogger): void {
+  cache = {
+    updater: { currentTag: 'unknown', updateAvailable: false },
+    doctor: { currentTag: 'unknown', updateAvailable: false },
+    lastCheckedAt: null,
+  };
+  void triggerCheck(log).catch(() => {
+    // swallowed; next scheduled tick will re-attempt
+  });
 }
 
 /**

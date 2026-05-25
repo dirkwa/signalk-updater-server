@@ -22,6 +22,10 @@ describe('classifyChannel', () => {
     expect(classifyChannel('')).toBe('dirkwa');
     expect(classifyChannel('weird')).toBe('dirkwa');
   });
+  it('maps bare floating refs to their conventional channel', () => {
+    expect(classifyChannel('latest')).toBe('stable');
+    expect(classifyChannel('beta')).toBe('beta');
+  });
 });
 
 describe('compareSemver', () => {

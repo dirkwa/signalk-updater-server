@@ -1,21 +1,19 @@
 import type { FastifyInstance } from 'fastify';
 import { listTags } from '../ghcr.js';
-import { compareSemver, isSemverTag } from '../tagClassifier.js';
+import { compareSemver } from '../tagClassifier.js';
 import { requireToken } from '../auth.js';
 import { performDoctorSwitch } from '../doctor-switch-service.js';
 import { MutexBusyError } from '../mutex.js';
-import { readQuadletImageTag } from '../quadlet-image-tag.js';
+import { getRuntimeIdentity, type VersionTarget } from '../runtime-version.js';
 import type { DoctorState } from '../types.js';
 
 const DOCTOR_IMAGE = process.env.DOCTOR_IMAGE ?? 'ghcr.io/dirkwa/signalk-doctor-server';
-const DOCTOR_QUADLET = 'signalk-doctor-server.container';
 
-// See routes/self.ts for the digest-vs-tag rationale — same fix, same
-// reason. The Quadlet is the source-of-truth for what the operator
-// pinned.
-function readDoctorTag(): Promise<string> {
-  return readQuadletImageTag(DOCTOR_QUADLET);
-}
+const DOCTOR_TARGET: VersionTarget = {
+  container: 'signalk-doctor-server',
+  quadletName: 'signalk-doctor-server.container',
+  healthUrl: process.env.DOCTOR_HEALTH_URL ?? 'http://127.0.0.1:3004/api/health',
+};
 
 async function deriveLatest(): Promise<string | null> {
   const r = await listTags(DOCTOR_IMAGE.replace(/^ghcr\.io\//, ''));
@@ -27,21 +25,19 @@ async function deriveLatest(): Promise<string | null> {
 
 export async function registerDoctorRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/doctor/state', async (): Promise<DoctorState> => {
-    const current = await readDoctorTag();
-    const latest = await deriveLatest();
-    // When the running Quadlet pins a floating tag like `:latest` or
-    // `:master-abc1234`, compareSemver is undefined (returns 0). Treat
-    // any concrete semver-shaped `latest` as an upgrade target in
-    // that case — otherwise the Update button stays greyed for the
-    // exact installs that most need to be moved off `:latest`.
-    let updateAvailable = false;
-    if (latest !== null && current !== 'unknown') {
-      updateAvailable = isSemverTag(current)
-        ? compareSemver(latest, current) > 0
-        : isSemverTag(latest);
-    }
+    const [identity, latest] = await Promise.all([
+      getRuntimeIdentity(DOCTOR_TARGET),
+      deriveLatest(),
+    ]);
+    // Both sides are clean semvers (or null) now that currentTag comes
+    // from the doctor's own /api/health. No floating-tag special case
+    // needed; the digest-vs-tag bug is gone.
+    const updateAvailable =
+      identity.version !== null && latest !== null && compareSemver(latest, identity.version) > 0;
     return {
-      currentTag: current,
+      // Wire field stays "currentTag" for backward compat with the
+      // pre-refactor webapp; value is the honest RuntimeIdentity.
+      currentTag: identity.version ?? 'unknown',
       ...(latest !== null ? { availableTag: latest } : {}),
       updateAvailable,
     };

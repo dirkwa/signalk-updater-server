@@ -15,8 +15,24 @@ export interface AnnotatedTag extends Tag {
 }
 
 export interface ContainerSnapshot {
+  /** OperatorIntent: the tag suffix from the Quadlet's `Image=` line
+   *  (`latest`, `dirkwa`, `0.6.3`, etc.). NOT a reliable indicator of
+   *  what version is actually running — the Quadlet can pin a floating
+   *  ref. Use `version` for that. */
   tag: string;
+  /** Image digest from dockerode (no longer surfaced in the UI; kept on
+   *  the wire for backward compat with older webapps). */
   digest: string;
+  /** RuntimeIdentity: the running engine's package.json version, when
+   *  knowable. Resolved via `getRuntimeIdentity` (HTTP health probe →
+   *  OCI image label → Quadlet tag if semver). Null when no source
+   *  could answer (e.g. signalk-server image with no
+   *  `org.opencontainers.image.version` label and a floating Quadlet
+   *  tag). */
+  version: string | null;
+  /** OperatorIntent channel: which release stream the Quadlet's tag
+   *  belongs to. Derived from the Quadlet tag via `classifyChannel`. */
+  channel: Channel | 'unknown';
   state: 'running' | 'stopped' | 'starting' | 'unhealthy' | 'missing';
   startedAt?: string;
 }

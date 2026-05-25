@@ -5,7 +5,8 @@ import { withMutex, MutexBusyError } from '../mutex.js';
 import { requireToken } from '../auth.js';
 import { listTags } from '../ghcr.js';
 import { resolveRuntime, safe } from '../podman/client.js';
-import { readQuadletImageTag } from '../quadlet-image-tag.js';
+import { getSelfVersion } from './health.js';
+import { invalidate as invalidateUpdatesCache } from '../update-checker.js';
 
 const SELF_IMAGE = process.env.SELF_IMAGE ?? 'ghcr.io/dirkwa/signalk-updater-server';
 const SELF_QUADLET = 'signalk-updater-server.container';
@@ -17,19 +18,13 @@ interface SelfState {
   updateAvailable: boolean;
 }
 
-// Read the tag the updater's Quadlet pins to. The previous design used
-// dockerode inspect on the running container, but when the Quadlet was
-// `:latest` the running image's Image field was a sha256 digest with
-// no path back to a semver — the UI then compared a digest against a
-// semver and silently greyed out the Update button (incident
-// 2026-05-25). The Quadlet is what the operator intended; trust that.
-function readSelfTag(): Promise<string> {
-  return readQuadletImageTag(SELF_QUADLET);
-}
-
 export async function registerSelfRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/self/state', async (): Promise<SelfState> => {
-    const current = await readSelfTag();
+    // RuntimeIdentity: read our own package.json version (cached at
+    // boot). This is the honest answer to "what version am I?" — no
+    // dockerode inspect, no digest-vs-tag bug. Falls back to "unknown"
+    // only if the package.json wasn't readable at boot.
+    const current = getSelfVersion();
     const r = await listTags(SELF_IMAGE.replace(/^ghcr\.io\//, ''));
     if (!r.ok) {
       return { currentTag: current, updateAvailable: false };
@@ -40,7 +35,7 @@ export async function registerSelfRoutes(app: FastifyInstance): Promise<void> {
     return {
       currentTag: current,
       availableTag: latest,
-      updateAvailable: latest !== undefined && latest !== current,
+      updateAvailable: latest !== undefined && current !== 'unknown' && latest !== current,
     };
   });
 
@@ -49,7 +44,11 @@ export async function registerSelfRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: requireToken },
     async (req, reply) => {
       const target = req.body?.tag;
-      const state = await readSelfTag();
+      // The `from` field records what was running before we mutate the
+      // Quadlet — use the honest RuntimeIdentity (cached package.json
+      // version) so the response shows e.g. "from: 0.6.3" instead of
+      // "from: latest" or a digest.
+      const state = getSelfVersion();
       const tag = target ?? (await deriveLatest());
       if (!tag) {
         reply.code(400);
@@ -104,6 +103,11 @@ export async function registerSelfRoutes(app: FastifyInstance): Promise<void> {
       // (See the 2026-05-24T17:19 incident: clean exit, no restart.)
       // restartUnit triggers systemd unconditionally regardless of
       // Restart=, so it works with the CC-4-mandated on-failure policy.
+      // Bust the update-checker cache: we just moved RuntimeIdentity,
+      // and the next boot's first action will be a fresh GHCR check
+      // anyway, but this also covers the case where the response
+      // races back to a still-mounted webapp tab on a different host.
+      invalidateUpdatesCache(app.log);
       reply.send({ ok: true, from: state, to: tag, exiting: true });
       setTimeout(() => {
         // Best-effort: if the DBus call itself fails, log and exit so
