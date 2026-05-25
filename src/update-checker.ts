@@ -1,5 +1,5 @@
 import { listTags } from './ghcr.js';
-import { compareSemver } from './tagClassifier.js';
+import { compareSemver, isSemverTag } from './tagClassifier.js';
 import { fetchDriftReport } from './drift-client.js';
 import { getRuntimeIdentity, type VersionTarget } from './runtime-version.js';
 import { getSelfVersion } from './routes/health.js';
@@ -41,7 +41,14 @@ let timer: ReturnType<typeof setInterval> | null = null;
 async function deriveLatestStable(image: string): Promise<string | null> {
   const r = await listTags(image.replace(/^ghcr\.io\//, ''));
   if (!r.ok) return null;
-  const stable = r.tags.filter((t) => t.channel === 'stable');
+  // Filter to concrete semver tags before picking the highest. `classifyChannel`
+  // also maps the bare `latest` floating ref into the stable channel for the
+  // Versions tab display, but if we leave it in the sort `compareSemver` returns
+  // 0 against every semver (since `latest` doesn't match SEMVER_RE) — that makes
+  // Array.sort unstable and whichever element happened to be first in the GHCR
+  // tag list (often `0.1.0` alphabetically) wins. Visible on `192.168.0.137`:
+  // engine reported `availableTag: 0.1.0` while running 0.6.6.
+  const stable = r.tags.filter((t) => t.channel === 'stable').filter((t) => isSemverTag(t.name));
   stable.sort((a, b) => compareSemver(b.name, a.name));
   return stable[0]?.name ?? null;
 }

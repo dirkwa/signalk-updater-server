@@ -276,9 +276,7 @@ export function Dashboard() {
 
   const doctorUrl = `${window.location.protocol}//${window.location.hostname}:3004/`;
 
-  const lastChecked = updates.data?.lastCheckedAt
-    ? `${relTime(updates.data.lastCheckedAt)} ago`
-    : 'never';
+  const lastChecked = updates.data?.lastCheckedAt ? relTime(updates.data.lastCheckedAt) : 'never';
 
   return (
     <>

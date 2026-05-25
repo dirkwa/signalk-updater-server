@@ -4,6 +4,7 @@ import { daemonReload, restartUnit } from '../dbus/systemd-user.js';
 import { withMutex, MutexBusyError } from '../mutex.js';
 import { requireToken } from '../auth.js';
 import { listTags } from '../ghcr.js';
+import { compareSemver, isSemverTag } from '../tagClassifier.js';
 import { resolveRuntime, safe } from '../podman/client.js';
 import { getSelfVersion } from './health.js';
 import { invalidate as invalidateUpdatesCache } from '../update-checker.js';
@@ -29,8 +30,14 @@ export async function registerSelfRoutes(app: FastifyInstance): Promise<void> {
     if (!r.ok) {
       return { currentTag: current, updateAvailable: false };
     }
-    const stable = r.tags.filter((t) => t.channel === 'stable');
-    stable.sort((a, b) => (b.pushedAt ?? '').localeCompare(a.pushedAt ?? ''));
+    // Filter to concrete semver tags before picking the highest. See
+    // update-checker.ts deriveLatestStable for the full rationale — the
+    // bare `latest` ref classifies as stable, and a pushedAt-based or
+    // localeCompare sort against it returns 0 for every comparison,
+    // making Array.sort effectively pick whichever stable element came
+    // first in GHCR's tag list (alphabetical, so `0.1.0`).
+    const stable = r.tags.filter((t) => t.channel === 'stable').filter((t) => isSemverTag(t.name));
+    stable.sort((a, b) => compareSemver(b.name, a.name));
     const latest = stable[0]?.name;
     return {
       currentTag: current,
@@ -128,7 +135,7 @@ export async function registerSelfRoutes(app: FastifyInstance): Promise<void> {
 async function deriveLatest(): Promise<string | null> {
   const r = await listTags(SELF_IMAGE.replace(/^ghcr\.io\//, ''));
   if (!r.ok) return null;
-  const stable = r.tags.filter((t) => t.channel === 'stable');
-  stable.sort((a, b) => (b.pushedAt ?? '').localeCompare(a.pushedAt ?? ''));
+  const stable = r.tags.filter((t) => t.channel === 'stable').filter((t) => isSemverTag(t.name));
+  stable.sort((a, b) => compareSemver(b.name, a.name));
   return stable[0]?.name ?? null;
 }
