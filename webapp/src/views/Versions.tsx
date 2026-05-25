@@ -401,7 +401,7 @@ function ChannelCard({
           <thead>
             <tr>
               <th>Tag</th>
-              <th className="d-none d-md-table-cell">Pushed</th>
+              <th className="d-none d-md-table-cell">Published</th>
               <th className="d-none d-md-table-cell">Digest</th>
               <th>Cache</th>
               <th className="text-end" style={{ width: '10rem' }}>
@@ -421,7 +421,7 @@ function ChannelCard({
                     {isCurrent ? <Badge color="primary">current</Badge> : null}
                   </td>
                   <td className="d-none d-md-table-cell text-muted small">
-                    {relTime(t.pushedAt) || '—'}
+                    {t.pushedAt ? fmtTime(t.pushedAt) : '—'}
                   </td>
                   <td className="d-none d-md-table-cell">
                     <code className="small" title={t.digest}>
