@@ -3,8 +3,10 @@ import type { Channel } from './types.js';
 /**
  * Classify a container image tag into one of the user-facing channels:
  *
- * - **stable** — pure semver: `v1.2.3`, `1.2.3`.
- * - **beta** — prerelease semver: `v1.2.3-beta.1`, `v1.2.3-rc.2`.
+ * - **stable** — pure semver: `v1.2.3`, `1.2.3`. Also bare `latest`,
+ *   which by convention is the stable channel's floating ref.
+ * - **beta** — prerelease semver: `v1.2.3-beta.1`, `v1.2.3-rc.2`. Also
+ *   bare `beta`.
  * - **master** — `master-<sha>` / `main-<sha>` / `master` / `main` bare.
  * - **dirkwa** — anything starting with `dirkwa-`. Fork channel.
  *
@@ -17,6 +19,8 @@ export function classifyChannel(tag: string): Channel {
   if (/^v?\d+\.\d+\.\d+(-(beta|rc)\.\d+)?$/i.test(t)) {
     return /-((beta|rc)\.)/i.test(t) ? 'beta' : 'stable';
   }
+  if (/^latest$/i.test(t)) return 'stable';
+  if (/^beta$/i.test(t)) return 'beta';
   if (/^(master|main)(-[0-9a-f]{4,40})?$/i.test(t)) return 'master';
   if (/^dirkwa-/i.test(t)) return 'dirkwa';
   return 'dirkwa';

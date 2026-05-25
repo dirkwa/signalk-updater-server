@@ -13,9 +13,29 @@
 
 export type ContainerState = 'running' | 'stopped' | 'starting' | 'unhealthy' | 'missing';
 
+export type Channel = 'stable' | 'beta' | 'master' | 'dirkwa';
+
+/** Channel union including the "couldn't read the Quadlet" answer.
+ *  Mirrors `Channel | 'unknown'` on src/types.ts. */
+export type ChannelOrUnknown = Channel | 'unknown';
+
 export interface ContainerSnapshot {
+  /** OperatorIntent: tag suffix from the Quadlet's `Image=` line. NOT
+   *  the running version when the Quadlet pins a floating ref; use
+   *  `version` for that. */
   tag: string;
+  /** Image digest from dockerode. Kept on the wire for backward compat
+   *  with the pre-runtime-version webapp; the new Dashboard renders
+   *  `version`/`channel` instead. */
   digest: string;
+  /** RuntimeIdentity: the running engine's reported version, when
+   *  knowable. Resolved server-side via the health-probe → OCI-label →
+   *  Quadlet-tag fallback in src/runtime-version.ts. Null when no
+   *  source could answer (e.g. signalk-server with a floating tag and
+   *  no OCI image label). */
+  version: string | null;
+  /** OperatorIntent channel derived from the Quadlet tag. */
+  channel: ChannelOrUnknown;
   state: ContainerState;
   startedAt?: string;
 }
@@ -98,8 +118,6 @@ export interface DriftReport {
   online: boolean;
   packages: DriftPackage[];
 }
-
-export type Channel = 'stable' | 'beta' | 'master' | 'dirkwa';
 
 export interface Tag {
   name: string;

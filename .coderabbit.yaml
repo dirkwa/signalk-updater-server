@@ -209,6 +209,41 @@ reviews:
           `src/routes/logs-stream.ts`. Don't suggest adding an
           `Authorization` header to the EventSource — there's no way.
 
+        ## RuntimeIdentity (NEVER extract a tag from dockerode inspect)
+
+        `src/runtime-version.ts` is the single resolver for "what
+        version is this container running?". It walks a three-tier
+        fallback: HTTP `/api/health.version` (or in-process
+        `getSelfVersion()` for our own container) → OCI image label
+        `org.opencontainers.image.version` → Quadlet `Image=` tag if
+        semver-shaped.
+
+        - DO NOT extract a tag from `dockerode.inspect().Image`. That
+          field is a sha256 digest when the Quadlet pins a floating
+          ref like `:latest`, and there is no path back to a tag from
+          a digest. Four call sites learned this the hard way; the
+          resolver is the fix.
+        - The Quadlet tag is **OperatorIntent**, not RuntimeIdentity.
+          A `:latest` Quadlet is the operator saying "stay on the
+          channel," not a version statement. The resolver only treats
+          the Quadlet tag as a version when it's semver-shaped — and
+          even then, only as a last-ditch fallback under the
+          health-probe and OCI-label tiers.
+        - state.ts, update-checker.ts, routes/doctor.ts, and
+          routes/self.ts all go through the resolver. Any NEW code
+          that needs "what version is this?" does the same — never a
+          fresh dockerode-inspect substring.
+
+        ## Update-checker cache invalidation
+
+        `update-checker.ts.invalidate()` is called from `routes/self.ts`
+        after a successful self-update (right before the restart
+        timer) and from `doctor-switch-service.ts` after `writeLastGood`.
+        Closes the publish-day window where the badge stays stale for
+        24h after a release. Don't suggest removing these calls — the
+        absence of cache-busting was the entire reason the badge said
+        "Available: 0.6.2" 16h after 0.6.3 published.
+
         ## Switch progress broker
 
         `src/switch-progress-broker.ts` is a module-level singleton
