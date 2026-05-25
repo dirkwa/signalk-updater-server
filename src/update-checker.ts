@@ -69,9 +69,10 @@ async function checkOne(image: string, target: VersionTarget): Promise<UpdateInf
 
 /**
  * Run the GHCR check for both peer engines. Refreshes the module-level
- * cache. Safe to call concurrently — `listTags` has its own 6h cache,
- * so a manual `triggerCheck` after a recent run will be a no-op for
- * the upstream API and just freshen the comparison.
+ * cache. Always busts `listTags`'s own per-image cache first so the
+ * refresh actually goes upstream — `triggerCheck` is by definition the
+ * "I want fresh data now" path (boot tick, 24h scheduled tick, manual
+ * "Check now", post-update invalidate).
  */
 // Loose logger shape so Fastify's FastifyBaseLogger or a plain pino
 // Logger both satisfy it without dragging in the pino types here.
