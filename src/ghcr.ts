@@ -194,6 +194,18 @@ export async function listTags(
   }
 }
 
+/** Bust the listTags cache for one image (or all, if no arg). Called from
+ *  update-checker.triggerCheck so the manual "Check now" button and the
+ *  scheduled tick see fresh GHCR data — without this, the 6h listTags
+ *  cache silently masks tags published in the last 6 hours. */
+export function clearListTagsCache(image?: string): void {
+  if (image === undefined) {
+    cache.clear();
+  } else {
+    cache.delete(image);
+  }
+}
+
 export function __resetGhcrCacheForTests(): void {
   cache.clear();
 }

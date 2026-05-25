@@ -190,7 +190,13 @@ export function Dashboard() {
     try {
       toast.show('Checking for updates…', 'info');
       await api('/api/updates/check', { method: 'POST' });
-      await updates.refresh();
+      // /api/updates/check busts ghcr.ts's listTags cache (see
+      // update-checker.ts triggerCheck). The Updater + Doctor cards
+      // read /api/self/state and /api/doctor/state respectively —
+      // both call back into listTags — so refresh them too so the
+      // "Available: X" rows reflect the fresh result without waiting
+      // 30s for the next polling tick.
+      await Promise.all([updates.refresh(), self.refresh(), doctor.refresh()]);
       toast.show('Update check complete', 'ok');
     } catch (err) {
       toast.show(
@@ -199,7 +205,7 @@ export function Dashboard() {
         6000,
       );
     }
-  }, [toast, updates]);
+  }, [toast, updates, self, doctor]);
 
   const lifecycle = useCallback(
     async (action: 'start' | 'stop' | 'restart'): Promise<void> => {
