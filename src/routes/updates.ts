@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { requireToken } from '../auth.js';
 import { getCachedUpdates, triggerCheck } from '../update-checker.js';
+import { refreshDoctorDrift } from '../drift-client.js';
 import type { AvailableUpdates } from '../types.js';
 
 export async function registerUpdateRoutes(app: FastifyInstance): Promise<void> {
@@ -16,7 +17,11 @@ export async function registerUpdateRoutes(app: FastifyInstance): Promise<void> 
   // bypassing the 24h cache. Used by the UI's "Check now" affordance,
   // though the default daily tick already covers operators who never
   // click anything.
+  //
+  // Also kicks the doctor's drift scan first so the merged response
+  // reflects fresh npm data, not the last 12-24h cached scan.
   app.post('/api/updates/check', { preHandler: requireToken }, async (req) => {
+    await refreshDoctorDrift();
     return triggerCheck(req.log);
   });
 }

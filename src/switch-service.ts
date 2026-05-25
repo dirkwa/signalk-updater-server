@@ -5,6 +5,7 @@ import { withMutex } from './mutex.js';
 import { preSwitchBackup, type BackupResult } from './backup.js';
 import { pollHealth, pullImage, trialRun } from './container-ops.js';
 import { publishSwitchEvent } from './switch-progress-broker.js';
+import { refreshDoctorDrift } from './drift-client.js';
 import type { SwitchResult } from './types.js';
 
 const SIGNALK_IMAGE = process.env.SIGNALK_IMAGE ?? 'ghcr.io/dirkwa/signalk-server';
@@ -197,6 +198,13 @@ async function doSwitch(input: SwitchInput): Promise<SwitchResult> {
     image: newImage,
     snapshotPath,
   }).catch(() => undefined);
+
+  // 8. Kick the doctor's drift scan. The new image has its own pinned
+  //    npm dep set, so the existing drift report is now misleading until
+  //    the doctor's next jittered tick (up to 24h away). Fire-and-forget
+  //    on a promise that swallows its own errors — never block the
+  //    switch's completion path on a doctor-side hiccup.
+  void refreshDoctorDrift();
 
   publishSwitchEvent({
     stage: 'complete',

@@ -64,13 +64,39 @@ export interface UpdateInfo {
 }
 
 // Mirror of the server-side AvailableUpdates type — the daily GHCR
-// snapshot for both peer engines. Drives the App-level "1 update
-// available" badge so a user sitting on Logs or Versions still sees
-// the notification.
+// snapshot for both peer engines, plus the doctor's npm dependency-drift
+// report. Drives the App-level "N updates available" badge so a user
+// sitting on Logs or Versions still sees the notification.
 export interface AvailableUpdates {
   updater: UpdateInfo;
   doctor: UpdateInfo;
+  signalkDeps?: DriftReport;
   lastCheckedAt: string | null;
+}
+
+export type DriftClassification =
+  | 'up-to-date'
+  | 'patch'
+  | 'minor'
+  | 'major'
+  | 'prerelease'
+  | 'unknown';
+
+export interface DriftPackage {
+  name: string;
+  installed: string;
+  latest: string | null;
+  classification: DriftClassification;
+  lastFetchedAt: string | null;
+}
+
+// Mirror of the doctor's GET /api/drift payload.
+export interface DriftReport {
+  signalkImageTag: string | null;
+  lastScannedAt: string;
+  lastSuccessfulScanAt: string | null;
+  online: boolean;
+  packages: DriftPackage[];
 }
 
 export type Channel = 'stable' | 'beta' | 'master' | 'dirkwa';

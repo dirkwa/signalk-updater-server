@@ -1,6 +1,7 @@
 import { listTags } from './ghcr.js';
 import { compareSemver, isSemverTag } from './tagClassifier.js';
 import { readQuadletImageTag } from './quadlet-image-tag.js';
+import { fetchDriftReport } from './drift-client.js';
 import type { AvailableUpdates, UpdateInfo } from './types.js';
 
 const UPDATER_IMAGE = process.env.SELF_IMAGE ?? 'ghcr.io/dirkwa/signalk-updater-server';
@@ -71,16 +72,33 @@ interface MinimalLogger {
 }
 
 export async function triggerCheck(log?: MinimalLogger): Promise<AvailableUpdates> {
-  const [updater, doctor] = await Promise.all([
+  // Drift fetch is parallel and silent on failure (fetchDriftReport
+  // returns null when the doctor is unreachable, malformed, or has
+  // nothing to show yet). That keeps a slow / down doctor from blocking
+  // the engine check that drives the badge for the engines themselves.
+  const [updater, doctor, drift] = await Promise.all([
     checkOne(UPDATER_IMAGE, UPDATER_QUADLET),
     checkOne(DOCTOR_IMAGE, DOCTOR_QUADLET),
+    fetchDriftReport(),
   ]);
-  cache = { updater, doctor, lastCheckedAt: new Date().toISOString() };
+  cache = {
+    updater,
+    doctor,
+    ...(drift !== null ? { signalkDeps: drift } : {}),
+    lastCheckedAt: new Date().toISOString(),
+  };
   if (log) {
     log.info(
       {
         updater: { current: updater.currentTag, latest: updater.availableTag },
         doctor: { current: doctor.currentTag, latest: doctor.availableTag },
+        drift: drift
+          ? {
+              imageTag: drift.signalkImageTag,
+              packages: drift.packages.length,
+              drifting: drift.packages.filter((p) => p.classification !== 'up-to-date').length,
+            }
+          : null,
       },
       'update-checker: refreshed available-updates cache',
     );
