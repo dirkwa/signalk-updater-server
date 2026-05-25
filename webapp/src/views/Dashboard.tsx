@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, type ReactNode } from 'react';
 import {
   Alert,
   Badge,
@@ -18,6 +18,7 @@ import { useConfirm } from '../confirm';
 import { fmtTime, relTime } from '../time';
 import type {
   AvailableUpdates,
+  ChannelOrUnknown,
   ContainerSnapshot,
   CurrentState,
   DoctorState,
@@ -34,36 +35,52 @@ const STATE_COLOR: Record<ContainerSnapshot['state'], string> = {
   missing: 'dark',
 };
 
+const CHANNEL_COLOR: Record<ChannelOrUnknown, string> = {
+  stable: 'success',
+  beta: 'warning',
+  master: 'danger',
+  dirkwa: 'info',
+  unknown: 'secondary',
+};
+
 function StateBadge({ state }: { state: ContainerSnapshot['state'] }) {
   return <Badge color={STATE_COLOR[state] ?? 'secondary'}>{state}</Badge>;
-}
-
-function shortDigest(digest: string | undefined): string {
-  if (!digest) return '—';
-  // Strip the algo prefix ("sha256:") so the user sees just the hex.
-  const hex = digest.includes(':') ? digest.slice(digest.indexOf(':') + 1) : digest;
-  return hex.slice(0, 12) + '…';
 }
 
 function SnapshotRow({
   label,
   value,
-  mono = false,
+  children,
 }: {
   label: string;
-  value: string;
-  mono?: boolean;
+  value?: string;
+  children?: ReactNode;
 }) {
   return (
     <div className="d-flex justify-content-between align-items-baseline mb-1">
       <span className="text-muted small">{label}</span>
-      <span
-        className={mono ? 'font-monospace text-truncate ms-2' : 'text-truncate ms-2'}
-        style={{ maxWidth: '60%' }}
-      >
-        {value}
+      <span className="text-truncate ms-2" style={{ maxWidth: '60%' }}>
+        {children ?? value ?? '—'}
       </span>
     </div>
+  );
+}
+
+/** Render the OperatorIntent channel as a `:tag (channel)` row.
+ *  The Quadlet tag answers "what stream does the operator track" — a
+ *  floating ref like `:latest` is the right value to show here, not a
+ *  version string. The classifier-derived badge color tells the
+ *  operator at a glance whether they're on the stable channel or a
+ *  fork/dev channel. */
+function ChannelCell({ tag, channel }: { tag: string; channel: ChannelOrUnknown }) {
+  if (!tag || tag === 'unknown') return <>—</>;
+  return (
+    <span className="d-inline-flex align-items-baseline gap-2">
+      <code className="small">:{tag}</code>
+      <Badge color={CHANNEL_COLOR[channel] ?? 'secondary'} pill>
+        {channel}
+      </Badge>
+    </span>
   );
 }
 
@@ -76,6 +93,15 @@ function StartedCell({ startedAt }: { startedAt?: string }) {
       value={rel ? `${fmtTime(startedAt)} (${rel})` : fmtTime(startedAt)}
     />
   );
+}
+
+/** RuntimeIdentity row. Shows the engine's reported semver when
+ *  knowable, falls back to a muted "—" so the operator sees the field
+ *  exists but the engine couldn't answer (signalk-server with no
+ *  OCI label, or a transient health-probe failure). */
+function VersionCell({ version }: { version: string | null }) {
+  if (version === null) return <span className="text-muted">—</span>;
+  return <span className="font-monospace">{version}</span>;
 }
 
 const CLASSIFICATION_COLOR: Record<DriftPackage['classification'], string> = {
@@ -156,6 +182,25 @@ export function Dashboard() {
     void updates.refresh();
   }, [state, health, self, doctor, updates]);
 
+  /** Manual cache refresh — POSTs /api/updates/check which busts the
+   *  in-memory cache and refires the GHCR probe. The escape hatch for
+   *  the publish-day window even when invalidate-on-update didn't fire
+   *  (e.g. release was on a different host). */
+  const checkNow = useCallback(async (): Promise<void> => {
+    try {
+      toast.show('Checking for updates…', 'info');
+      await api('/api/updates/check', { method: 'POST' });
+      await updates.refresh();
+      toast.show('Update check complete', 'ok');
+    } catch (err) {
+      toast.show(
+        `Update check failed: ${err instanceof Error ? err.message : String(err)}`,
+        'err',
+        6000,
+      );
+    }
+  }, [toast, updates]);
+
   const lifecycle = useCallback(
     async (action: 'start' | 'stop' | 'restart'): Promise<void> => {
       const verb = action.charAt(0).toUpperCase() + action.slice(1);
@@ -185,7 +230,7 @@ export function Dashboard() {
     if (!tag) return;
     const r = await confirm.ask({
       title: `Self-update to ${tag}?`,
-      body: 'The updater will pull the new image, rewrite its own Quadlet, and restart. The browser will lose its connection for ~30s; refresh the page once it returns. signalk-server is not touched.',
+      body: 'The updater will pull the new image and restart. The browser will lose its connection for ~30s; refresh the page once it returns. signalk-server is not touched.',
       okLabel: 'Update',
     });
     if (!r.confirmed) return;
@@ -207,7 +252,7 @@ export function Dashboard() {
     if (!tag) return;
     const r = await confirm.ask({
       title: `Update signalk-doctor-server to ${tag}?`,
-      body: 'The updater will pull the new image, rewrite the doctor Quadlet, restart it, and roll back if it does not come up healthy. The doctor is the recovery surface, so this is the safe place to drive the update from.',
+      body: 'The updater will pull the new image, restart the doctor, and roll back if it does not come up healthy. The doctor is the recovery surface, so this is the safe place to drive the update from.',
       okLabel: 'Update',
     });
     if (!r.confirmed) return;
@@ -218,6 +263,7 @@ export function Dashboard() {
       setTimeout(() => {
         void doctor.refresh();
         void state.refresh();
+        void updates.refresh();
       }, 1500);
     } catch (err) {
       toast.show(
@@ -226,9 +272,13 @@ export function Dashboard() {
         8000,
       );
     }
-  }, [confirm, doctor, state, toast]);
+  }, [confirm, doctor, state, updates, toast]);
 
   const doctorUrl = `${window.location.protocol}//${window.location.hostname}:3004/`;
+
+  const lastChecked = updates.data?.lastCheckedAt
+    ? `${relTime(updates.data.lastCheckedAt)} ago`
+    : 'never';
 
   return (
     <>
@@ -259,12 +309,15 @@ export function Dashboard() {
             <CardBody>
               {state.data ? (
                 <>
-                  <SnapshotRow label="Image tag" value={state.data.signalkServer.tag || '—'} />
-                  <SnapshotRow
-                    label="Digest"
-                    value={shortDigest(state.data.signalkServer.digest)}
-                    mono
-                  />
+                  <SnapshotRow label="Version">
+                    <VersionCell version={state.data.signalkServer.version} />
+                  </SnapshotRow>
+                  <SnapshotRow label="Channel">
+                    <ChannelCell
+                      tag={state.data.signalkServer.tag}
+                      channel={state.data.signalkServer.channel}
+                    />
+                  </SnapshotRow>
                   <StartedCell startedAt={state.data.signalkServer.startedAt} />
                   <PinnedDepsSection updates={updates.data} />
                 </>
@@ -301,12 +354,15 @@ export function Dashboard() {
             <CardBody>
               {state.data ? (
                 <>
-                  <SnapshotRow label="Image tag" value={state.data.updaterServer.tag || '—'} />
-                  <SnapshotRow
-                    label="Digest"
-                    value={shortDigest(state.data.updaterServer.digest)}
-                    mono
-                  />
+                  <SnapshotRow label="Version">
+                    <VersionCell version={state.data.updaterServer.version} />
+                  </SnapshotRow>
+                  <SnapshotRow label="Channel">
+                    <ChannelCell
+                      tag={state.data.updaterServer.tag}
+                      channel={state.data.updaterServer.channel}
+                    />
+                  </SnapshotRow>
                   <StartedCell startedAt={state.data.updaterServer.startedAt} />
                   <SnapshotRow
                     label="Update"
@@ -314,10 +370,23 @@ export function Dashboard() {
                       self.data?.updateAvailable && self.data.availableTag
                         ? `Available: ${self.data.availableTag}`
                         : self.data
-                          ? `Up to date (${self.data.currentTag})`
+                          ? 'Up to date'
                           : '—'
                     }
                   />
+                  <SnapshotRow label="Last checked">
+                    <span className="d-inline-flex align-items-baseline gap-2">
+                      <span className="text-muted small">{lastChecked}</span>
+                      <Button
+                        color="link"
+                        size="sm"
+                        className="p-0 small"
+                        onClick={() => void checkNow()}
+                      >
+                        Check now
+                      </Button>
+                    </span>
+                  </SnapshotRow>
                 </>
               ) : (
                 <Spinner size="sm" />
@@ -349,12 +418,15 @@ export function Dashboard() {
             <CardBody>
               {state.data ? (
                 <>
-                  <SnapshotRow label="Image tag" value={state.data.doctorServer.tag || '—'} />
-                  <SnapshotRow
-                    label="Digest"
-                    value={shortDigest(state.data.doctorServer.digest)}
-                    mono
-                  />
+                  <SnapshotRow label="Version">
+                    <VersionCell version={state.data.doctorServer.version} />
+                  </SnapshotRow>
+                  <SnapshotRow label="Channel">
+                    <ChannelCell
+                      tag={state.data.doctorServer.tag}
+                      channel={state.data.doctorServer.channel}
+                    />
+                  </SnapshotRow>
                   <StartedCell startedAt={state.data.doctorServer.startedAt} />
                   <SnapshotRow
                     label="Update"
@@ -362,7 +434,7 @@ export function Dashboard() {
                       doctor.data?.updateAvailable && doctor.data.availableTag
                         ? `Available: ${doctor.data.availableTag}`
                         : doctor.data
-                          ? `Up to date (${doctor.data.currentTag})`
+                          ? 'Up to date'
                           : '—'
                     }
                   />
@@ -389,7 +461,7 @@ export function Dashboard() {
       </Row>
 
       <p className="text-muted small mt-2">
-        Last check:{' '}
+        Last state poll:{' '}
         {state.data ? `${fmtTime(state.data.lastCheck)} (${relTime(state.data.lastCheck)})` : '—'}
         {' · '}
         Runtime: {health.data?.runtime ?? (health.loading ? 'loading…' : 'unreachable')}
