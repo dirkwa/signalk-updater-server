@@ -1,4 +1,4 @@
-import { listTags } from './ghcr.js';
+import { clearListTagsCache, listTags } from './ghcr.js';
 import { compareSemver, pickLatestStable } from './tagClassifier.js';
 import { fetchDriftReport } from './drift-client.js';
 import { getRuntimeIdentity, type VersionTarget } from './runtime-version.js';
@@ -81,6 +81,19 @@ interface MinimalLogger {
 }
 
 export async function triggerCheck(log?: MinimalLogger): Promise<AvailableUpdates> {
+  // Bust the listTags cache for both peer images before re-querying.
+  // Every triggerCheck path (boot tick, 24h scheduled tick, manual
+  // "Check now", post-self-update invalidate) is by definition asking
+  // "what does GHCR have RIGHT NOW?" — without this, the 6h listTags
+  // cache in ghcr.ts silently masks tags published in the last 6 hours.
+  // Visible on 192.168.0.137 after the v0.6.8 publish: engine kept
+  // reporting `availableTag: 0.6.7` because the listTags cache still
+  // held the pre-0.6.8 tag list, and triggerCheck hit the cache instead
+  // of refreshing it. The listTags cache stays valuable for the
+  // high-frequency /api/versions read path (Dashboard polling) — only
+  // explicit refresh paths should bust it.
+  clearListTagsCache(UPDATER_IMAGE.replace(/^ghcr\.io\//, ''));
+  clearListTagsCache(DOCTOR_IMAGE.replace(/^ghcr\.io\//, ''));
   // Drift fetch is parallel and silent on failure (fetchDriftReport
   // returns null when the doctor is unreachable, malformed, or has
   // nothing to show yet). That keeps a slow / down doctor from blocking
