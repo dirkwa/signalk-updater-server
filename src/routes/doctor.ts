@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { listTags } from '../ghcr.js';
-import { compareSemver, isSemverTag } from '../tagClassifier.js';
+import { compareSemver, pickLatestStable } from '../tagClassifier.js';
 import { requireToken } from '../auth.js';
 import { performDoctorSwitch } from '../doctor-switch-service.js';
 import { MutexBusyError } from '../mutex.js';
@@ -18,11 +18,7 @@ const DOCTOR_TARGET: VersionTarget = {
 async function deriveLatest(): Promise<string | null> {
   const r = await listTags(DOCTOR_IMAGE.replace(/^ghcr\.io\//, ''));
   if (!r.ok) return null;
-  // See update-checker.ts deriveLatestStable for the isSemverTag rationale —
-  // the bare `latest` ref classifies as stable but breaks compareSemver's sort.
-  const stable = r.tags.filter((t) => t.channel === 'stable').filter((t) => isSemverTag(t.name));
-  stable.sort((a, b) => compareSemver(b.name, a.name));
-  return stable[0]?.name ?? null;
+  return pickLatestStable(r.tags)?.name ?? null;
 }
 
 export async function registerDoctorRoutes(app: FastifyInstance): Promise<void> {

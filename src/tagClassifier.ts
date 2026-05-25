@@ -63,3 +63,26 @@ export function compareSemver(a: string, b: string): number {
   if (!bPre) return -1;
   return aPre.localeCompare(bPre);
 }
+
+/**
+ * Pick the highest concrete-semver tag from the stable channel. Used by
+ * everything that derives "is there an update available" — engine
+ * self-update, doctor-update, the daily GHCR check.
+ *
+ * Why filter to `isSemverTag` first: `classifyChannel` also maps the
+ * bare `latest` floating ref into the stable channel for the Versions
+ * tab display. If we leave `latest` in the comparator, `compareSemver`
+ * returns 0 against every semver (since `latest` doesn't match
+ * SEMVER_RE). With many zeros, `Array.sort` is unstable — JS engines
+ * preserve insertion order — and whichever stable-channel element was
+ * first in GHCR's tag list (typically `0.1.0` alphabetically) wins,
+ * regardless of how new it is. That manifested as
+ * `availableTag: "0.1.0"` on an engine running 0.6.6.
+ */
+export function pickLatestStable<T extends { name: string; channel: Channel }>(
+  tags: T[],
+): T | null {
+  const stable = tags.filter((t) => t.channel === 'stable' && isSemverTag(t.name));
+  stable.sort((a, b) => compareSemver(b.name, a.name));
+  return stable[0] ?? null;
+}
