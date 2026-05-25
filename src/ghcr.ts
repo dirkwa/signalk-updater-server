@@ -26,11 +26,6 @@ interface ManifestResponse {
   }>;
 }
 
-interface ImageConfig {
-  // RFC3339 build timestamp written by buildx into the image config.
-  created?: string;
-}
-
 const MANIFEST_ACCEPT =
   'application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json';
 
@@ -133,8 +128,23 @@ async function fetchTagPublishedAt(
     if (!blobRes.ok) {
       return { digest: headerDigest, pushedAt: null };
     }
-    const config = (await blobRes.json()) as ImageConfig;
-    return { digest: headerDigest, pushedAt: config.created ?? null };
+    // Narrow at the HTTP boundary — the blob is untrusted JSON, so we
+    // refuse to let an arbitrary string cross into Tag.pushedAt and
+    // poison downstream sorts / fmtTime calls. Parse with Date.parse
+    // and re-emit canonical ISO8601 so the wire shape is uniform.
+    const raw: unknown = await blobRes.json();
+    const created =
+      typeof raw === 'object' && raw !== null
+        ? (raw as Record<string, unknown>).created
+        : undefined;
+    if (typeof created !== 'string') {
+      return { digest: headerDigest, pushedAt: null };
+    }
+    const ms = Date.parse(created);
+    if (Number.isNaN(ms)) {
+      return { digest: headerDigest, pushedAt: null };
+    }
+    return { digest: headerDigest, pushedAt: new Date(ms).toISOString() };
   } catch {
     return { digest: headerDigest, pushedAt: null };
   }

@@ -4,10 +4,15 @@ export interface Tag {
   name: string;
   channel: Channel;
   digest: string;
-  /** ISO8601 timestamp from the GitHub Packages API (`updated_at`),
-   *  or null when the join missed the tag (rate-limited, deleted,
-   *  or never populated by the Packages API). The UI renders null
-   *  as an em dash. Never fabricate a "now" timestamp here. */
+  /** ISO8601 timestamp the image was built — sourced from the OCI image
+   *  config blob's `created` field (RFC3339, written by buildx). For
+   *  multi-arch images we descend into the amd64/linux platform manifest
+   *  before reading the config. Null when any step of that lookup failed
+   *  (deleted image, malformed config, unreachable blob CDN). The UI
+   *  renders null as an em dash. Never fabricate a "now" timestamp here.
+   *  Prior implementations sourced this from the GitHub Packages API
+   *  `updated_at` field, but that API rejects anonymous callers even
+   *  for public packages — see src/ghcr.ts for the history. */
   pushedAt: string | null;
   size?: number;
 }

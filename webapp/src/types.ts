@@ -123,9 +123,11 @@ export interface Tag {
   name: string;
   channel: Channel;
   digest: string;
-  /** ISO8601 timestamp from the GitHub Packages API (`updated_at`),
-   *  or null when the join missed the tag (rate-limited, deleted,
-   *  or never populated). The UI renders null as an em dash. */
+  /** ISO8601 image build timestamp (RFC3339), sourced server-side from
+   *  the OCI image config blob's `created` field. Null when the lookup
+   *  fails for any reason (deleted image, malformed config, etc.) — the
+   *  UI renders null as an em dash. See src/types.ts for the canonical
+   *  contract and the history of why this isn't sourced from GH Packages. */
   pushedAt: string | null;
   size?: number;
 }
