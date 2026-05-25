@@ -77,14 +77,33 @@ export async function trialRun(
   }
 }
 
+export interface PollHealthProgress {
+  elapsedMs: number;
+  timeoutMs: number;
+  attempt: number;
+}
+
 /**
  * Poll a health endpoint until it returns 2xx or the deadline expires.
  * Used by switch flows to confirm the new image actually came up healthy
  * before declaring success.
+ *
+ * `onProgress` (optional) is called once before each attempt with the
+ * elapsed time, configured timeout, and attempt number — switch flows
+ * use this to publish stage events to the UI so the user sees the poll
+ * is alive instead of a silent ~minute that looks hung.
  */
-export async function pollHealth(url: string, timeoutMs: number): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
+export async function pollHealth(
+  url: string,
+  timeoutMs: number,
+  onProgress?: (p: PollHealthProgress) => void,
+): Promise<boolean> {
+  const start = Date.now();
+  const deadline = start + timeoutMs;
+  let attempt = 0;
   while (Date.now() < deadline) {
+    attempt += 1;
+    onProgress?.({ elapsedMs: Date.now() - start, timeoutMs, attempt });
     try {
       const res = await fetch(url);
       if (res.ok) return true;

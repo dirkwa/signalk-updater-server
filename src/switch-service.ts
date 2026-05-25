@@ -13,6 +13,14 @@ const SIGNALK_QUADLET = 'signalk-server.container';
 const SIGNALK_UNIT = 'signalk-server.service';
 const SIGNALK_HEALTH_URL = process.env.SIGNALK_HEALTH_URL ?? 'http://127.0.0.1:3000/signalk';
 const TRIAL_NAME_PREFIX = 'signalk-updater-trial';
+// Default health-poll timeout. Matches `TimeoutStartSec=180` in the
+// signalk-server Quadlet — systemd is willing to wait that long for the
+// new container to come up; the switch flow should be willing to wait
+// at least as long before declaring failure and rolling back. The
+// previous default of 60s was tuned to a clean dev install and was
+// regularly tripped by real boats where signalk-server has 30+ plugins
+// to load on cold start.
+const DEFAULT_HEALTH_TIMEOUT_MS = 180_000;
 
 interface SwitchInput {
   tag: string;
@@ -159,8 +167,18 @@ async function doSwitch(input: SwitchInput): Promise<SwitchResult> {
     from: previousImage,
     message: 'Waiting for signalk-server to become healthy…',
   });
-  const timeoutMs = input.healthTimeoutMs ?? 60000;
-  const healthy = await pollHealth(SIGNALK_HEALTH_URL, timeoutMs);
+  const timeoutMs = input.healthTimeoutMs ?? DEFAULT_HEALTH_TIMEOUT_MS;
+  const healthy = await pollHealth(SIGNALK_HEALTH_URL, timeoutMs, (p) => {
+    // Re-emit on each attempt so the UI shows progress instead of going
+    // silent for the (potentially) 3 minutes the wait can take. Same
+    // `stage: health-poll`; only the message changes.
+    publishSwitchEvent({
+      stage: 'health-poll',
+      to: input.tag,
+      from: previousImage,
+      message: `Polling /signalk… ${Math.round(p.elapsedMs / 1000)}s of ${Math.round(p.timeoutMs / 1000)}s (attempt ${p.attempt})`,
+    });
+  });
   if (!healthy) {
     publishSwitchEvent({
       stage: 'rolling-back',
