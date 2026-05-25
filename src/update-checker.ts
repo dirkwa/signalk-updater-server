@@ -1,5 +1,5 @@
 import { listTags } from './ghcr.js';
-import { compareSemver } from './tagClassifier.js';
+import { compareSemver, pickLatestStable } from './tagClassifier.js';
 import { fetchDriftReport } from './drift-client.js';
 import { getRuntimeIdentity, type VersionTarget } from './runtime-version.js';
 import { getSelfVersion } from './routes/health.js';
@@ -41,9 +41,7 @@ let timer: ReturnType<typeof setInterval> | null = null;
 async function deriveLatestStable(image: string): Promise<string | null> {
   const r = await listTags(image.replace(/^ghcr\.io\//, ''));
   if (!r.ok) return null;
-  const stable = r.tags.filter((t) => t.channel === 'stable');
-  stable.sort((a, b) => compareSemver(b.name, a.name));
-  return stable[0]?.name ?? null;
+  return pickLatestStable(r.tags)?.name ?? null;
 }
 
 async function checkOne(image: string, target: VersionTarget): Promise<UpdateInfo> {

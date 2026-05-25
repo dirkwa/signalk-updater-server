@@ -4,6 +4,7 @@ import { daemonReload, restartUnit } from '../dbus/systemd-user.js';
 import { withMutex, MutexBusyError } from '../mutex.js';
 import { requireToken } from '../auth.js';
 import { listTags } from '../ghcr.js';
+import { pickLatestStable } from '../tagClassifier.js';
 import { resolveRuntime, safe } from '../podman/client.js';
 import { getSelfVersion } from './health.js';
 import { invalidate as invalidateUpdatesCache } from '../update-checker.js';
@@ -29,9 +30,7 @@ export async function registerSelfRoutes(app: FastifyInstance): Promise<void> {
     if (!r.ok) {
       return { currentTag: current, updateAvailable: false };
     }
-    const stable = r.tags.filter((t) => t.channel === 'stable');
-    stable.sort((a, b) => (b.pushedAt ?? '').localeCompare(a.pushedAt ?? ''));
-    const latest = stable[0]?.name;
+    const latest = pickLatestStable(r.tags)?.name;
     return {
       currentTag: current,
       availableTag: latest,
@@ -128,7 +127,5 @@ export async function registerSelfRoutes(app: FastifyInstance): Promise<void> {
 async function deriveLatest(): Promise<string | null> {
   const r = await listTags(SELF_IMAGE.replace(/^ghcr\.io\//, ''));
   if (!r.ok) return null;
-  const stable = r.tags.filter((t) => t.channel === 'stable');
-  stable.sort((a, b) => (b.pushedAt ?? '').localeCompare(a.pushedAt ?? ''));
-  return stable[0]?.name ?? null;
+  return pickLatestStable(r.tags)?.name ?? null;
 }
