@@ -90,8 +90,7 @@ export interface DriftPackage {
   lastFetchedAt: string | null;
 }
 
-// Mirror of the doctor's GET /api/drift payload. Omitted etag here
-// (server-side only — webapp never sends conditional GETs).
+// Mirror of the doctor's GET /api/drift payload.
 export interface DriftReport {
   signalkImageTag: string | null;
   lastScannedAt: string;
