@@ -17,9 +17,11 @@ import { useToast } from '../toast';
 import { useConfirm } from '../confirm';
 import { fmtTime, relTime } from '../time';
 import type {
+  AvailableUpdates,
   ContainerSnapshot,
   CurrentState,
   DoctorState,
+  DriftPackage,
   HealthResponse,
   SelfState,
 } from '../types';
@@ -76,6 +78,56 @@ function StartedCell({ startedAt }: { startedAt?: string }) {
   );
 }
 
+const CLASSIFICATION_COLOR: Record<DriftPackage['classification'], string> = {
+  'up-to-date': 'success',
+  patch: 'info',
+  minor: 'warning',
+  major: 'danger',
+  prerelease: 'secondary',
+  unknown: 'secondary',
+};
+
+function PinnedDepsSection({ updates }: { updates: AvailableUpdates | null }) {
+  const drift = updates?.signalkDeps;
+  if (!drift) return null;
+  const drifting = drift.packages.filter((p) => p.classification !== 'up-to-date');
+  // Quiet UI: only render when something is actually drifting. Up-to-date
+  // packages don't earn the operator's attention.
+  if (drifting.length === 0) return null;
+  const lastChecked = drift.lastSuccessfulScanAt
+    ? relTime(drift.lastSuccessfulScanAt)
+    : 'never (offline since boot)';
+  return (
+    <div className="mt-3 pt-3 border-top">
+      <div className="d-flex justify-content-between align-items-baseline mb-2">
+        <span className="text-muted small">Pinned dependencies</span>
+        <span className="text-muted small">
+          {drifting.length} {drifting.length === 1 ? 'update' : 'updates'}
+        </span>
+      </div>
+      {drifting.map((p) => (
+        <div
+          key={p.name}
+          className="d-flex justify-content-between align-items-baseline mb-1 small"
+        >
+          <span className="font-monospace text-truncate me-2" title={p.name}>
+            {p.name}
+          </span>
+          <span className="d-flex align-items-baseline gap-2">
+            <span className="text-muted">
+              {p.installed} → {p.latest ?? '?'}
+            </span>
+            <Badge color={CLASSIFICATION_COLOR[p.classification] ?? 'secondary'} pill>
+              {p.classification}
+            </Badge>
+          </span>
+        </div>
+      ))}
+      <p className="text-muted small mb-0 mt-2">Last checked: {lastChecked}</p>
+    </div>
+  );
+}
+
 export function Dashboard() {
   const toast = useToast();
   const confirm = useConfirm();
@@ -92,13 +144,17 @@ export function Dashboard() {
   const doctor = useApi<DoctorState>((signal) => api('/api/doctor/state', { signal }), {
     intervalMs: 30000,
   });
+  const updates = useApi<AvailableUpdates>((signal) => api('/api/updates/available', { signal }), {
+    intervalMs: 5 * 60 * 1000,
+  });
 
   const refreshAll = useCallback((): void => {
     void state.refresh();
     void health.refresh();
     void self.refresh();
     void doctor.refresh();
-  }, [state, health, self, doctor]);
+    void updates.refresh();
+  }, [state, health, self, doctor, updates]);
 
   const lifecycle = useCallback(
     async (action: 'start' | 'stop' | 'restart'): Promise<void> => {
@@ -210,6 +266,7 @@ export function Dashboard() {
                     mono
                   />
                   <StartedCell startedAt={state.data.signalkServer.startedAt} />
+                  <PinnedDepsSection updates={updates.data} />
                 </>
               ) : (
                 <Spinner size="sm" />

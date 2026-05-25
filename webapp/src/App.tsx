@@ -72,9 +72,13 @@ export function App() {
   const updates = useApi<AvailableUpdates>((signal) => api('/api/updates/available', { signal }), {
     intervalMs: 5 * 60 * 1000,
   });
+  const driftingDeps =
+    updates.data?.signalkDeps?.packages.filter((p) => p.classification !== 'up-to-date').length ??
+    0;
   const pendingUpdates =
     (updates.data?.updater.updateAvailable ? 1 : 0) +
-    (updates.data?.doctor.updateAvailable ? 1 : 0);
+    (updates.data?.doctor.updateAvailable ? 1 : 0) +
+    driftingDeps;
 
   return (
     <Container className="py-4">

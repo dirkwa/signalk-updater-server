@@ -86,12 +86,51 @@ export interface UpdateInfo {
 }
 
 /** GET /api/updates/available — daily-refreshed snapshot of both peer
- *  engines' current + latest stable tag. Powered by a server-side
- *  setInterval so the badge stays accurate even when no client is open. */
+ *  engines' current + latest stable tag, plus the doctor's npm
+ *  dependency-drift report. Powered by a server-side setInterval so the
+ *  badge stays accurate even when no client is open. */
 export interface AvailableUpdates {
   updater: UpdateInfo;
   doctor: UpdateInfo;
+  /** Drift report fetched from signalk-doctor-server's GET /api/drift.
+   *  Optional — omitted when the doctor is unreachable, when no scan has
+   *  run yet, or when the doctor has no admin token to call signalk-server. */
+  signalkDeps?: DriftReport;
   lastCheckedAt: string | null;
+}
+
+/** Mirror of the doctor's `DriftClassification` enum. */
+export type DriftClassification =
+  | 'up-to-date'
+  | 'patch'
+  | 'minor'
+  | 'major'
+  | 'prerelease'
+  | 'unknown';
+
+/** Single package row in the drift report. */
+export interface DriftPackage {
+  name: string;
+  installed: string;
+  /** null when we've never successfully fetched from npm. */
+  latest: string | null;
+  classification: DriftClassification;
+  /** ISO timestamp of the most recent successful npm fetch, or null. */
+  lastFetchedAt: string | null;
+}
+
+/** Mirror of the doctor's GET /api/drift payload. */
+export interface DriftReport {
+  /** The signalk-server image tag the report was computed against. Null
+   *  when the doctor couldn't inspect the container at scan time. */
+  signalkImageTag: string | null;
+  /** ISO timestamp of the most recent scan attempt (success or failure). */
+  lastScannedAt: string;
+  /** ISO timestamp of the most recent scan that actually reached npm. */
+  lastSuccessfulScanAt: string | null;
+  /** True if the most recent scan reached npm for at least one package. */
+  online: boolean;
+  packages: DriftPackage[];
 }
 
 /** Persisted per-installation Versions-tab filter. Lives at
