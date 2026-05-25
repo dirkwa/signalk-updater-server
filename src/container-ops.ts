@@ -78,20 +78,62 @@ export async function trialRun(
 }
 
 /**
+ * Default health-poll timeout for switch flows. Matches `TimeoutStartSec=180`
+ * in the engine Quadlets — systemd is willing to wait that long for the new
+ * container to come up; the switch flow should be willing to wait at least
+ * as long before declaring failure and rolling back. The previous default
+ * of 60s was tuned to clean dev installs and was regularly tripped by real
+ * boats where signalk-server has 30+ plugins to load on cold start.
+ */
+export const DEFAULT_HEALTH_TIMEOUT_MS = 180_000;
+
+export interface PollHealthProgress {
+  elapsedMs: number;
+  timeoutMs: number;
+  attempt: number;
+}
+
+/**
  * Poll a health endpoint until it returns 2xx or the deadline expires.
  * Used by switch flows to confirm the new image actually came up healthy
  * before declaring success.
+ *
+ * `onProgress` (optional) is called once before each attempt with the
+ * elapsed time, configured timeout, and attempt number — switch flows
+ * use this to publish stage events to the UI so the user sees the poll
+ * is alive instead of a silent ~minute that looks hung.
  */
-export async function pollHealth(url: string, timeoutMs: number): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
+export async function pollHealth(
+  url: string,
+  timeoutMs: number,
+  onProgress?: (p: PollHealthProgress) => void,
+): Promise<boolean> {
+  const start = Date.now();
+  const deadline = start + timeoutMs;
+  let attempt = 0;
   while (Date.now() < deadline) {
+    attempt += 1;
+    onProgress?.({ elapsedMs: Date.now() - start, timeoutMs, attempt });
+    // Bound each fetch by the time remaining on the global deadline so
+    // one stalled request can't blow past timeoutMs. Minimum 50ms guards
+    // against AbortController firing before fetch() even starts when
+    // we're already at the deadline edge.
+    const fetchTimeout = Math.max(50, deadline - Date.now());
+    const controller = new AbortController();
+    const abortTimer = setTimeout(() => controller.abort(), fetchTimeout);
     try {
-      const res = await fetch(url);
+      const res = await fetch(url, { signal: controller.signal });
       if (res.ok) return true;
     } catch {
-      // ignore; retry
+      // ignore; retry (includes AbortError from the per-fetch timeout)
+    } finally {
+      clearTimeout(abortTimer);
     }
-    await delay(2000);
+    // Same deadline-respecting clamp on the inter-attempt sleep — if
+    // the deadline is <2s away, don't sleep past it.
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    await delay(Math.min(2000, remaining));
   }
   return false;
 }

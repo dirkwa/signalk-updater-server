@@ -3,7 +3,7 @@ import { rewriteQuadletImage, writeLastGood } from './quadlet/rewriter.js';
 import { daemonReload, restartUnit } from './dbus/systemd-user.js';
 import { withMutex } from './mutex.js';
 import { preSwitchBackup, type BackupResult } from './backup.js';
-import { pollHealth, pullImage, trialRun } from './container-ops.js';
+import { DEFAULT_HEALTH_TIMEOUT_MS, pollHealth, pullImage, trialRun } from './container-ops.js';
 import { publishSwitchEvent } from './switch-progress-broker.js';
 import { refreshDoctorDrift } from './drift-client.js';
 import type { SwitchResult } from './types.js';
@@ -159,8 +159,18 @@ async function doSwitch(input: SwitchInput): Promise<SwitchResult> {
     from: previousImage,
     message: 'Waiting for signalk-server to become healthy…',
   });
-  const timeoutMs = input.healthTimeoutMs ?? 60000;
-  const healthy = await pollHealth(SIGNALK_HEALTH_URL, timeoutMs);
+  const timeoutMs = input.healthTimeoutMs ?? DEFAULT_HEALTH_TIMEOUT_MS;
+  const healthy = await pollHealth(SIGNALK_HEALTH_URL, timeoutMs, (p) => {
+    // Re-emit on each attempt so the UI shows progress instead of going
+    // silent for the (potentially) 3 minutes the wait can take. Same
+    // `stage: health-poll`; only the message changes.
+    publishSwitchEvent({
+      stage: 'health-poll',
+      to: input.tag,
+      from: previousImage,
+      message: `Polling /signalk… ${Math.round(p.elapsedMs / 1000)}s of ${Math.round(p.timeoutMs / 1000)}s (attempt ${p.attempt})`,
+    });
+  });
   if (!healthy) {
     publishSwitchEvent({
       stage: 'rolling-back',

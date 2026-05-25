@@ -2,7 +2,7 @@ import { safe } from './podman/client.js';
 import { rewriteQuadletImage, writeLastGood } from './quadlet/rewriter.js';
 import { daemonReload, restartUnit } from './dbus/systemd-user.js';
 import { withMutex } from './mutex.js';
-import { pollHealth, pullImage, trialRun } from './container-ops.js';
+import { DEFAULT_HEALTH_TIMEOUT_MS, pollHealth, pullImage, trialRun } from './container-ops.js';
 import { invalidate as invalidateUpdatesCache } from './update-checker.js';
 import type { SwitchResult } from './types.js';
 
@@ -99,7 +99,7 @@ async function doDoctorSwitch(input: DoctorSwitchInput): Promise<SwitchResult> {
   }
 
   // 5. Health poll
-  const timeoutMs = input.healthTimeoutMs ?? 60000;
+  const timeoutMs = input.healthTimeoutMs ?? DEFAULT_HEALTH_TIMEOUT_MS;
   const healthy = await pollHealth(DOCTOR_HEALTH_URL, timeoutMs);
   if (!healthy) {
     if (previousImage) {
