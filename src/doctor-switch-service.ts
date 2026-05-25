@@ -2,7 +2,7 @@ import { safe } from './podman/client.js';
 import { rewriteQuadletImage, writeLastGood } from './quadlet/rewriter.js';
 import { daemonReload, restartUnit } from './dbus/systemd-user.js';
 import { withMutex } from './mutex.js';
-import { pollHealth, pullImage, trialRun } from './container-ops.js';
+import { DEFAULT_HEALTH_TIMEOUT_MS, pollHealth, pullImage, trialRun } from './container-ops.js';
 import { invalidate as invalidateUpdatesCache } from './update-checker.js';
 import type { SwitchResult } from './types.js';
 
@@ -15,10 +15,6 @@ const DOCTOR_QUADLET = 'signalk-doctor-server.container';
 const DOCTOR_UNIT = 'signalk-doctor-server.service';
 const DOCTOR_HEALTH_URL = process.env.DOCTOR_HEALTH_URL ?? 'http://127.0.0.1:3004/api/health';
 const TRIAL_NAME_PREFIX = 'signalk-doctor-trial';
-// Default health-poll timeout. See switch-service.ts DEFAULT_HEALTH_TIMEOUT_MS
-// for the rationale — keep both flows on the same default so the UI is
-// predictable regardless of which container is being switched.
-const DEFAULT_HEALTH_TIMEOUT_MS = 180_000;
 
 interface DoctorSwitchInput {
   tag: string;

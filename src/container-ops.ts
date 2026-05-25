@@ -77,6 +77,16 @@ export async function trialRun(
   }
 }
 
+/**
+ * Default health-poll timeout for switch flows. Matches `TimeoutStartSec=180`
+ * in the engine Quadlets — systemd is willing to wait that long for the new
+ * container to come up; the switch flow should be willing to wait at least
+ * as long before declaring failure and rolling back. The previous default
+ * of 60s was tuned to clean dev installs and was regularly tripped by real
+ * boats where signalk-server has 30+ plugins to load on cold start.
+ */
+export const DEFAULT_HEALTH_TIMEOUT_MS = 180_000;
+
 export interface PollHealthProgress {
   elapsedMs: number;
   timeoutMs: number;

@@ -3,7 +3,7 @@ import { rewriteQuadletImage, writeLastGood } from './quadlet/rewriter.js';
 import { daemonReload, restartUnit } from './dbus/systemd-user.js';
 import { withMutex } from './mutex.js';
 import { preSwitchBackup, type BackupResult } from './backup.js';
-import { pollHealth, pullImage, trialRun } from './container-ops.js';
+import { DEFAULT_HEALTH_TIMEOUT_MS, pollHealth, pullImage, trialRun } from './container-ops.js';
 import { publishSwitchEvent } from './switch-progress-broker.js';
 import { refreshDoctorDrift } from './drift-client.js';
 import type { SwitchResult } from './types.js';
@@ -13,14 +13,6 @@ const SIGNALK_QUADLET = 'signalk-server.container';
 const SIGNALK_UNIT = 'signalk-server.service';
 const SIGNALK_HEALTH_URL = process.env.SIGNALK_HEALTH_URL ?? 'http://127.0.0.1:3000/signalk';
 const TRIAL_NAME_PREFIX = 'signalk-updater-trial';
-// Default health-poll timeout. Matches `TimeoutStartSec=180` in the
-// signalk-server Quadlet — systemd is willing to wait that long for the
-// new container to come up; the switch flow should be willing to wait
-// at least as long before declaring failure and rolling back. The
-// previous default of 60s was tuned to a clean dev install and was
-// regularly tripped by real boats where signalk-server has 30+ plugins
-// to load on cold start.
-const DEFAULT_HEALTH_TIMEOUT_MS = 180_000;
 
 interface SwitchInput {
   tag: string;
