@@ -30,7 +30,7 @@ export async function registerSelfRoutes(app: FastifyInstance): Promise<void> {
       return { currentTag: current, updateAvailable: false };
     }
     const stable = r.tags.filter((t) => t.channel === 'stable');
-    stable.sort((a, b) => b.pushedAt.localeCompare(a.pushedAt));
+    stable.sort((a, b) => (b.pushedAt ?? '').localeCompare(a.pushedAt ?? ''));
     const latest = stable[0]?.name;
     return {
       currentTag: current,
@@ -129,6 +129,6 @@ async function deriveLatest(): Promise<string | null> {
   const r = await listTags(SELF_IMAGE.replace(/^ghcr\.io\//, ''));
   if (!r.ok) return null;
   const stable = r.tags.filter((t) => t.channel === 'stable');
-  stable.sort((a, b) => b.pushedAt.localeCompare(a.pushedAt));
+  stable.sort((a, b) => (b.pushedAt ?? '').localeCompare(a.pushedAt ?? ''));
   return stable[0]?.name ?? null;
 }

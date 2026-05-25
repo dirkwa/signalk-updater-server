@@ -123,7 +123,10 @@ export interface Tag {
   name: string;
   channel: Channel;
   digest: string;
-  pushedAt: string;
+  /** ISO8601 timestamp from the GitHub Packages API (`updated_at`),
+   *  or null when the join missed the tag (rate-limited, deleted,
+   *  or never populated). The UI renders null as an em dash. */
+  pushedAt: string | null;
   size?: number;
 }
 

@@ -12,7 +12,7 @@ function groupByChannel(tags: AnnotatedTag[]): Record<Channel, AnnotatedTag[]> {
   const out: Record<Channel, AnnotatedTag[]> = { stable: [], beta: [], master: [], dirkwa: [] };
   for (const t of tags) out[t.channel].push(t);
   for (const c of Object.keys(out) as Channel[]) {
-    out[c].sort((a, b) => b.pushedAt.localeCompare(a.pushedAt));
+    out[c].sort((a, b) => (b.pushedAt ?? '').localeCompare(a.pushedAt ?? ''));
   }
   return out;
 }
