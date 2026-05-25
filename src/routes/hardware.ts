@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { readFile, open, rename } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { setTimeout as delay } from 'node:timers/promises';
+import { pollHealth } from '../container-ops.js';
 import {
   applyToHardware,
   readHardware,
@@ -41,20 +41,6 @@ async function writeAtomic(path: string, body: string): Promise<void> {
   }
   await rename(tmp, path);
   await fsyncDir(dirname(path));
-}
-
-async function pollHealth(url: string, timeoutMs: number): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      const res = await fetch(url);
-      if (res.ok) return true;
-    } catch {
-      // ignore
-    }
-    await delay(2000);
-  }
-  return false;
 }
 
 export async function registerHardwareRoutes(app: FastifyInstance): Promise<void> {

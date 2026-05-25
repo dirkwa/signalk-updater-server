@@ -114,13 +114,26 @@ export async function pollHealth(
   while (Date.now() < deadline) {
     attempt += 1;
     onProgress?.({ elapsedMs: Date.now() - start, timeoutMs, attempt });
+    // Bound each fetch by the time remaining on the global deadline so
+    // one stalled request can't blow past timeoutMs. Minimum 50ms guards
+    // against AbortController firing before fetch() even starts when
+    // we're already at the deadline edge.
+    const fetchTimeout = Math.max(50, deadline - Date.now());
+    const controller = new AbortController();
+    const abortTimer = setTimeout(() => controller.abort(), fetchTimeout);
     try {
-      const res = await fetch(url);
+      const res = await fetch(url, { signal: controller.signal });
       if (res.ok) return true;
     } catch {
-      // ignore; retry
+      // ignore; retry (includes AbortError from the per-fetch timeout)
+    } finally {
+      clearTimeout(abortTimer);
     }
-    await delay(2000);
+    // Same deadline-respecting clamp on the inter-attempt sleep — if
+    // the deadline is <2s away, don't sleep past it.
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    await delay(Math.min(2000, remaining));
   }
   return false;
 }
