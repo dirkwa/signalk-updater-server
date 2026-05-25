@@ -3,7 +3,13 @@ import { render, screen, waitFor } from '@testing-library/react';
 import { Dashboard } from './Dashboard';
 import { ToastProvider } from '../toast';
 import { ConfirmProvider } from '../confirm';
-import type { CurrentState, HealthResponse, SelfState } from '../types';
+import type {
+  AvailableUpdates,
+  CurrentState,
+  DoctorState,
+  HealthResponse,
+  SelfState,
+} from '../types';
 
 // vi.restoreAllMocks() resets vi.fn spies but doesn't undo a direct
 // globalThis.fetch assignment. Snapshot and restore by hand so a
@@ -27,18 +33,28 @@ function mockFetch(map: Record<string, unknown>): void {
 
 const sampleState: CurrentState = {
   signalkServer: {
-    tag: 'v2.24.0',
+    tag: 'dirkwa',
     digest: 'sha256:abcdef123456',
+    version: null,
+    channel: 'dirkwa',
     state: 'running',
     startedAt: new Date().toISOString(),
   },
   updaterServer: {
-    tag: 'v0.5.3',
+    tag: 'latest',
     digest: 'sha256:fedcba654321',
+    version: '0.6.4',
+    channel: 'stable',
     state: 'running',
     updateAvailable: false,
   },
-  doctorServer: { tag: 'v0.3.0', digest: 'sha256:111222333444', state: 'stopped' },
+  doctorServer: {
+    tag: 'latest',
+    digest: 'sha256:111222333444',
+    version: '0.3.0',
+    channel: 'stable',
+    state: 'stopped',
+  },
   lastCheck: new Date().toISOString(),
 };
 
@@ -46,12 +62,23 @@ const sampleHealth: HealthResponse = {
   ok: true,
   runtime: 'podman',
   uptimeSeconds: 1234,
-  version: '0.5.3',
+  version: '0.6.4',
 };
 
 const sampleSelf: SelfState = {
-  currentTag: 'v0.5.3',
+  currentTag: '0.6.4',
   updateAvailable: false,
+};
+
+const sampleDoctor: DoctorState = {
+  currentTag: '0.3.0',
+  updateAvailable: false,
+};
+
+const sampleUpdates: AvailableUpdates = {
+  updater: { currentTag: '0.6.4', updateAvailable: false },
+  doctor: { currentTag: '0.3.0', updateAvailable: false },
+  lastCheckedAt: new Date().toISOString(),
 };
 
 function renderDashboard() {
@@ -70,6 +97,8 @@ describe('Dashboard', () => {
       '/api/state': sampleState,
       '/api/health': sampleHealth,
       '/api/self/state': sampleSelf,
+      '/api/doctor/state': sampleDoctor,
+      '/api/updates/available': sampleUpdates,
     });
   });
 
@@ -85,12 +114,15 @@ describe('Dashboard', () => {
     expect(await screen.findByText('Doctor')).toBeInTheDocument();
   });
 
-  it('displays the current tag for each container', async () => {
+  it('displays version and channel for each container', async () => {
     renderDashboard();
     await waitFor(() => {
-      expect(screen.getByText('v2.24.0')).toBeInTheDocument();
-      expect(screen.getByText('v0.5.3')).toBeInTheDocument();
-      expect(screen.getByText('v0.3.0')).toBeInTheDocument();
+      // Versions (semver from RuntimeIdentity)
+      expect(screen.getByText('0.6.4')).toBeInTheDocument();
+      expect(screen.getByText('0.3.0')).toBeInTheDocument();
+      // Channels (OperatorIntent tag, rendered as `:tag` next to a badge)
+      expect(screen.getAllByText(':latest').length).toBeGreaterThanOrEqual(2);
+      expect(screen.getByText(':dirkwa')).toBeInTheDocument();
     });
   });
 
