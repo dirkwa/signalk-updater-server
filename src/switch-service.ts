@@ -1,6 +1,6 @@
 import { safe } from './podman/client.js';
 import { rewriteQuadletImage, writeLastGood } from './quadlet/rewriter.js';
-import { daemonReload, restartUnit } from './dbus/systemd-user.js';
+import { daemonReload, startUnit, stopUnitAndWait } from './dbus/systemd-user.js';
 import { withMutex } from './mutex.js';
 import { preSwitchBackup, type BackupResult } from './backup.js';
 import { DEFAULT_HEALTH_TIMEOUT_MS, pollHealth, pullImage, trialRun } from './container-ops.js';
@@ -115,15 +115,34 @@ async function doSwitch(input: SwitchInput): Promise<SwitchResult> {
     from: previousImage,
     message: 'Reloading systemd and restarting signalk-server…',
   });
+  // Use stopUnit + startUnit instead of restartUnit. When the old
+  // container exits non-zero (status=137 from SIGKILL because
+  // signalk-server doesn't trap SIGTERM; or status=143 even on a clean
+  // SIGTERM exit because systemd treats signal-deaths as failures), the
+  // `Restart=` policy schedules an auto-restart on top of our DBus
+  // restart request — adding a ~90s gap before the new container
+  // actually starts. An intentional Stop suppresses the Restart= policy
+  // for that transition (per systemd.service(5)), so the unit goes
+  // Stop → inactive → Start with no auto-restart delay. Observed on
+  // both signalk-server (Restart=always) and the doctor/updater
+  // (Restart=on-failure) — the auto-restart timer fires regardless of
+  // policy choice, only the trigger condition differs.
   const dbusOk = await safe(async () => {
     await daemonReload();
     publishSwitchEvent({
       stage: 'restarting',
       to: input.tag,
       from: previousImage,
-      message: 'Restarting signalk-server…',
+      message: 'Stopping signalk-server…',
     });
-    await restartUnit(SIGNALK_UNIT);
+    await stopUnitAndWait(SIGNALK_UNIT);
+    publishSwitchEvent({
+      stage: 'restarting',
+      to: input.tag,
+      from: previousImage,
+      message: 'Starting signalk-server on new image…',
+    });
+    await startUnit(SIGNALK_UNIT);
   });
   if (!dbusOk.ok) {
     // Try to roll back the Quadlet before bailing
@@ -183,7 +202,8 @@ async function doSwitch(input: SwitchInput): Promise<SwitchResult> {
       await rewriteQuadletImage(SIGNALK_QUADLET, previousImage).catch(() => undefined);
       await safe(async () => {
         await daemonReload();
-        await restartUnit(SIGNALK_UNIT);
+        await stopUnitAndWait(SIGNALK_UNIT);
+        await startUnit(SIGNALK_UNIT);
       });
     }
     publishSwitchEvent({

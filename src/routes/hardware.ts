@@ -12,7 +12,7 @@ import {
 } from '../hardware.js';
 import { withMutex, MutexBusyError } from '../mutex.js';
 import { snapshotQuadlet, pruneSnapshots } from '../quadlet/rewriter.js';
-import { daemonReload, restartUnit } from '../dbus/systemd-user.js';
+import { daemonReload, startUnit, stopUnitAndWait } from '../dbus/systemd-user.js';
 import { safe } from '../podman/client.js';
 import { requireToken } from '../auth.js';
 import { resolveSignalkHealthUrl } from '../signalk-url-resolver.js';
@@ -65,10 +65,12 @@ export async function registerHardwareRoutes(app: FastifyInstance): Promise<void
           await writeAtomic(quadletPath, rewritten);
           await pruneSnapshots(SERVER_QUADLET);
 
-          // daemon-reload + restart signalk-server
+          // daemon-reload + stop + start (NOT RestartUnit — see switch-service.ts
+          // for the auto-restart-timer rationale; same applies here)
           const dbusOk = await safe(async () => {
             await daemonReload();
-            await restartUnit(SERVER_UNIT);
+            await stopUnitAndWait(SERVER_UNIT);
+            await startUnit(SERVER_UNIT);
           });
           if (!dbusOk.ok) {
             return { ok: false, error: `systemd: ${dbusOk.error.userMessage}` };
