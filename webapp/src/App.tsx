@@ -83,7 +83,13 @@ export function App() {
   return (
     <Container className="py-4">
       <div className="d-flex align-items-center mb-4">
-        <img src="/app-icon.svg" alt="" width={40} height={40} className="me-3" />
+        <img
+          src={`${import.meta.env.BASE_URL}app-icon.svg`}
+          alt=""
+          width={40}
+          height={40}
+          className="me-3"
+        />
         <h1 className="h3 mb-0">SignalK Updater</h1>
         <Badge color="secondary" className="ms-3" title="Engine container version">
           v{__APP_VERSION__}
