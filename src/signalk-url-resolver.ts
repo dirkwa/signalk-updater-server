@@ -55,9 +55,7 @@ async function getBase(): Promise<string> {
   if (!resolveLogged) {
     resolveLogged = true;
     // eslint-disable-next-line no-console
-    console.log(
-      `[signalk-url-resolver] no SIGNALK_HEALTH_URL/SIGNALK_URL override; using ${resolvedBase}`,
-    );
+    console.log(`[signalk-url-resolver] no env override; using ${resolvedBase}`);
   }
   return resolvedBase;
 }
