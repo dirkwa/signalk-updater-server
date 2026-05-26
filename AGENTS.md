@@ -148,13 +148,28 @@ Tag `vX.Y.Z` triggers `.github/workflows/publish-image.yml` which builds a multi
 
 ## Webapp
 
-- **React 19 + Vite + reactstrap + Bootstrap 5.** Bundled, not injected. This container runs standalone on port 3003 (not embedded inside signalk-server), so the [signalk-backup](https://github.com/dirkwa/signalk-backup) admin-CSS-injection pattern doesn't apply here. The thin-shell plugin in [signalk-updater](https://github.com/dirkwa/signalk-updater) IS embedded and DOES use that pattern — these are deliberately different.
+- **React 19 + Vite + reactstrap + Bootstrap 5.** Bundled, not injected. This container runs standalone on port 3003, and is also iframed by the [signalk-updater](https://github.com/dirkwa/signalk-updater) plugin into the SignalK admin sidebar. Both deployments serve from the same built bundle — see "Two deployments, one bundle" below.
 - **OS-driven color modes** via `data-bs-theme` set by the inline boot script in `webapp/index.html` and kept in sync by `useThemeSync` after mount. No in-UI toggle.
-- **Same-origin API calls** at `/api/*`. The Fastify host serves both the API and the static bundle from `public/` (built from `webapp/`). Dev mode runs Vite on `:5173` and proxies `/api` to `VITE_DEV_API` (default `http://127.0.0.1:3003`).
+- **API base via `<meta name="api-base">`.** `webapp/src/api.ts` reads the tag once at module load via `readApiBase()`, exposes the value via `getApiBase()`, and prefixes every `api()` call. The two `EventSource` sites (`webapp/src/views/Versions.tsx`, `webapp/src/views/Logs.tsx`) also call `getApiBase()` since they don't go through `api()`. **All three call sites must stay in sync** — if a 4th `fetch()` or `new EventSource()` is added outside `api()`, it must read the base too, or it will break under the proxy. The Fastify host serves both the API and the static bundle from `public/` (built from `webapp/`). Dev mode runs Vite on `:5173` and proxies `/api` to `VITE_DEV_API` (default `http://127.0.0.1:3003`).
 - **Bearer attached on every call** in `webapp/src/api.ts`. The bearer on read-only routes is redundant for localhost (those routes accept token-or-localhost per CC-2) but harmless. Don't tighten this to non-GET-only without checking the consumer paths.
 - **Reactstrap component conventions.** Use semantic `color="primary|danger|warning"` props, not hex colors (would break dark mode). Prefer Bootstrap utility classes (`d-flex`, `gap-2`, `text-muted`, `mb-3`, `font-monospace`) over inline styles.
 - **SSE auth lives in the trust boundary.** Browser `EventSource` can't set headers, so the log-stream endpoint accepts any client that already crossed the engine's PublishPort. Don't suggest adding `Authorization` to `new EventSource(...)` — there's no way.
 - **Test pattern for fetch mocks.** Tests that stub `globalThis.fetch` MUST snapshot the original at module load and restore in `afterEach`. `vi.restoreAllMocks()` does NOT undo direct global assignments. See `webapp/src/views/Dashboard.test.tsx`.
+
+## Two deployments, one bundle
+
+The same `webapp/` bundle serves two surfaces:
+
+1. **Standalone** at `http://<host>:3003/` — direct visit, Fastify serves the bundle, API at `/api/*`.
+2. **Embedded** at `https://<host>/admin/#/e/Updater` — the SignalK admin loads the [signalk-updater](https://github.com/dirkwa/signalk-updater) plugin's Module Federation remote, which renders an `<iframe>` pointing at the plugin's reverse proxy mounted under `/plugins/signalk-updater/console/`. The proxy forwards to this engine container and injects `<meta name="api-base" content="/plugins/signalk-updater/console">` into the HTML before serving it to the browser.
+
+This is the contract that keeps both surfaces working:
+
+- **`vite.config.ts` uses `base: './'`.** Asset URLs in HTML emit as `./assets/index-X.js`, so they resolve against whatever document URL the browser is on — `/` for standalone, `/plugins/signalk-updater/console/` for embedded. Switching this to absolute would break the embedded case (asset requests would bypass the plugin proxy and 404 against signalk-server's root).
+- **`webapp/src/api.ts` `readApiBase()` reads the meta tag.** API path strings (`'/api/health'`, etc.) are hardcoded; the prefix comes from the tag. Standalone has no tag, prefix is `''`, paths stay `/api/*`. Embedded has the tag, paths become `/plugins/signalk-updater/console/api/*`.
+- **Three call sites read the base.** `api()` covers all `fetch()` to `/api/*`. `EventSource` does not go through `api()` — `views/Versions.tsx` and `views/Logs.tsx` call `getApiBase()` directly. Any future `fetch`/`EventSource` that bypasses `api()` must do the same.
+
+Changing any of these is a cross-repo coordination with [signalk-updater](https://github.com/dirkwa/signalk-updater) — its proxy mount path and the meta tag content must match.
 
 ## Webapp / engine type drift
 

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Badge, Button, ButtonGroup, Form, FormGroup, Input, Label } from 'reactstrap';
+import { getApiBase } from '../api';
 import { fmtLogTime, logLevelClass, parseLogLine } from '../log-parse';
 
 type Container = 'signalk-server' | 'signalk-updater-server' | 'signalk-doctor-server';
@@ -70,7 +71,7 @@ export function Logs() {
     // is on the same origin as the SPA and the engine listens on a
     // single PublishPort, so any client that reached it has already
     // crossed the auth boundary.
-    const url = `/api/containers/${encodeURIComponent(container)}/logs/stream?tail=${lines}`;
+    const url = `${getApiBase()}/api/containers/${encodeURIComponent(container)}/logs/stream?tail=${lines}`;
     const es = new EventSource(url);
     esRef.current = es;
     es.onopen = (): void => setStatus(pausedRef.current ? 'paused' : 'connected');
