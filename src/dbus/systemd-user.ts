@@ -95,3 +95,52 @@ export async function startUnit(unit: string): Promise<void> {
 export async function stopUnit(unit: string): Promise<void> {
   await call('StopUnit', 'ss', [unit, 'replace']);
 }
+
+/**
+ * Read `org.freedesktop.systemd1.Unit.ActiveState` for the named unit.
+ * Returns one of systemd's documented states: `active`, `reloading`,
+ * `inactive`, `failed`, `activating`, `deactivating`. Returns `unknown`
+ * if the unit doesn't exist or the property can't be read.
+ */
+export async function getActiveState(unit: string): Promise<string> {
+  const r = await runBusctl([
+    'get-property',
+    SYSD.bus,
+    `${SYSD.obj}/unit/${encodeUnitPath(unit)}`,
+    'org.freedesktop.systemd1.Unit',
+    'ActiveState',
+  ]);
+  if (!r.ok) return 'unknown';
+  // Output shape: `s "active"\n`
+  const m = /"([^"]+)"/.exec(r.stdout);
+  return m?.[1] ?? 'unknown';
+}
+
+/**
+ * systemd encodes unit names in object paths by replacing every non-[A-Za-z0-9]
+ * character with `_<hex>` (e.g. `signalk-server.service` →
+ * `signalk_2dserver_2eservice`). Mirrors `bus_path_escape` in systemd.
+ */
+function encodeUnitPath(unit: string): string {
+  return unit.replace(/[^A-Za-z0-9]/g, (c) => `_${c.charCodeAt(0).toString(16)}`);
+}
+
+/**
+ * Stop a unit and wait for it to reach a terminal state (`inactive` or
+ * `failed`). `stopUnit` only enqueues the stop job — when we follow it
+ * with `startUnit`, the two are independent DBus jobs and systemd does
+ * NOT serialize them. Polling ActiveState bridges that gap so the
+ * caller can assume the unit is fully down before issuing the next
+ * start. Times out after `timeoutMs` (default 30s, which is generous
+ * for a 10s SIGTERM grace + container teardown).
+ */
+export async function stopUnitAndWait(unit: string, timeoutMs = 30_000): Promise<void> {
+  await stopUnit(unit);
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const state = await getActiveState(unit);
+    if (state === 'inactive' || state === 'failed' || state === 'unknown') return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error(`stopUnit(${unit}) did not reach terminal state within ${timeoutMs}ms`);
+}

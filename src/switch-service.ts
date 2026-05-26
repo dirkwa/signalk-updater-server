@@ -1,6 +1,6 @@
 import { safe } from './podman/client.js';
 import { rewriteQuadletImage, writeLastGood } from './quadlet/rewriter.js';
-import { daemonReload, restartUnit } from './dbus/systemd-user.js';
+import { daemonReload, startUnit, stopUnitAndWait } from './dbus/systemd-user.js';
 import { withMutex } from './mutex.js';
 import { preSwitchBackup, type BackupResult } from './backup.js';
 import { DEFAULT_HEALTH_TIMEOUT_MS, pollHealth, pullImage, trialRun } from './container-ops.js';
@@ -115,15 +115,29 @@ async function doSwitch(input: SwitchInput): Promise<SwitchResult> {
     from: previousImage,
     message: 'Reloading systemd and restarting signalk-server…',
   });
+  // Use stopUnit + startUnit instead of restartUnit. Under `Restart=always`,
+  // signalk-server fails to trap SIGTERM, gets SIGKILL'd by podman after
+  // the 10s grace (status=137), and systemd's auto-restart timer takes over
+  // — adding ~90s before the new container actually starts even though our
+  // DBus restart request was already in the queue. An intentional Stop
+  // bypasses the `Restart=` policy (per systemd.service(5)), so the new
+  // container starts immediately after the old one is fully down.
   const dbusOk = await safe(async () => {
     await daemonReload();
     publishSwitchEvent({
       stage: 'restarting',
       to: input.tag,
       from: previousImage,
-      message: 'Restarting signalk-server…',
+      message: 'Stopping signalk-server…',
     });
-    await restartUnit(SIGNALK_UNIT);
+    await stopUnitAndWait(SIGNALK_UNIT);
+    publishSwitchEvent({
+      stage: 'restarting',
+      to: input.tag,
+      from: previousImage,
+      message: 'Starting signalk-server on new image…',
+    });
+    await startUnit(SIGNALK_UNIT);
   });
   if (!dbusOk.ok) {
     // Try to roll back the Quadlet before bailing
@@ -183,7 +197,8 @@ async function doSwitch(input: SwitchInput): Promise<SwitchResult> {
       await rewriteQuadletImage(SIGNALK_QUADLET, previousImage).catch(() => undefined);
       await safe(async () => {
         await daemonReload();
-        await restartUnit(SIGNALK_UNIT);
+        await stopUnitAndWait(SIGNALK_UNIT);
+        await startUnit(SIGNALK_UNIT);
       });
     }
     publishSwitchEvent({

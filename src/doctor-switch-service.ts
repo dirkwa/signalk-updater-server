@@ -1,6 +1,6 @@
 import { safe } from './podman/client.js';
 import { rewriteQuadletImage, writeLastGood } from './quadlet/rewriter.js';
-import { daemonReload, restartUnit } from './dbus/systemd-user.js';
+import { daemonReload, startUnit, stopUnitAndWait } from './dbus/systemd-user.js';
 import { withMutex } from './mutex.js';
 import { DEFAULT_HEALTH_TIMEOUT_MS, pollHealth, pullImage, trialRun } from './container-ops.js';
 import { invalidate as invalidateUpdatesCache } from './update-checker.js';
@@ -78,10 +78,12 @@ async function doDoctorSwitch(input: DoctorSwitchInput): Promise<SwitchResult> {
     };
   }
 
-  // 4. daemon-reload + restart
+  // 4. daemon-reload + stop + start (NOT RestartUnit — see switch-service.ts
+  // for the auto-restart-timer rationale; same applies here)
   const dbusOk = await safe(async () => {
     await daemonReload();
-    await restartUnit(DOCTOR_UNIT);
+    await stopUnitAndWait(DOCTOR_UNIT);
+    await startUnit(DOCTOR_UNIT);
   });
   if (!dbusOk.ok) {
     if (previousImage) {
@@ -106,7 +108,8 @@ async function doDoctorSwitch(input: DoctorSwitchInput): Promise<SwitchResult> {
       await rewriteQuadletImage(DOCTOR_QUADLET, previousImage).catch(() => undefined);
       await safe(async () => {
         await daemonReload();
-        await restartUnit(DOCTOR_UNIT);
+        await stopUnitAndWait(DOCTOR_UNIT);
+        await startUnit(DOCTOR_UNIT);
       });
     }
     return {
