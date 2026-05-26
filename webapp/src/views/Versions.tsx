@@ -13,7 +13,7 @@ import {
   Spinner,
   Table,
 } from 'reactstrap';
-import { api } from '../api';
+import { api, getApiBase } from '../api';
 import { useApi } from '../hooks/useApi';
 import { useToast } from '../toast';
 import { useConfirm } from '../confirm';
@@ -118,7 +118,7 @@ export function Versions() {
   // emits its lastEvent immediately on connect, so reloading the tab
   // mid-flow picks the state right back up.
   useEffect(() => {
-    const es = new EventSource('/api/versions/switch/stream');
+    const es = new EventSource(`${getApiBase()}/api/versions/switch/stream`);
     eventSourceRef.current = es;
     es.onmessage = (ev: MessageEvent<string>) => {
       try {

@@ -12,9 +12,19 @@ const pkgVersion = (
   JSON.parse(readFileSync(resolve(here, 'package.json'), 'utf-8')) as { version: string }
 ).version;
 
-// The webapp is served by Fastify at /, so no base prefix.
+// Relative base. Two consumers:
+// 1. Standalone at :3003 — HTML asset URLs like ./assets/index.js resolve
+//    against the page URL (always /), so they end up at /assets/index.js
+//    just like an absolute base would.
+// 2. Embedded by signalk-updater plugin — the plugin reverse-proxies us
+//    under /plugins/signalk-updater/console/. Relative asset URLs there
+//    resolve against /plugins/signalk-updater/console/, keeping every
+//    asset request inside the proxy's namespace.
+// API paths (string literals in JS) take a separate path via the
+// <meta name="api-base"> tag the plugin injects — see api.ts.
 // Vitest config lives in vitest.config.ts; this file is build-only.
 export default defineConfig({
+  base: './',
   plugins: [react()],
   define: {
     __APP_VERSION__: JSON.stringify(pkgVersion),
