@@ -3,6 +3,7 @@ import { resolveRuntime } from './podman/client.js';
 import { getRuntimeIdentity, type VersionTarget } from './runtime-version.js';
 import { readQuadletImageTag } from './quadlet-image-tag.js';
 import { getSelfVersion } from './routes/health.js';
+import { resolveSignalkHealthUrl } from './signalk-url-resolver.js';
 
 // Per-container targets for the RuntimeIdentity resolver. Quadlet names
 // are static (the installer drops them under ~/.config/containers/systemd
@@ -10,14 +11,18 @@ import { getSelfVersion } from './routes/health.js';
 // `getSelfVersion` (cached package.json) rather than a self-HTTP probe.
 // The doctor's health URL goes via host loopback because we share the
 // host network namespace through the rootless podman socket mount.
-const SIGNALK_TARGET: VersionTarget = {
-  container: 'signalk-server',
-  quadletName: 'signalk-server.container',
-  // signalk-server's /signalk endpoint isn't a `{version}` shape we
-  // own. Falls through to image-label / Quadlet tag. With the default
-  // `:dirkwa` Quadlet, version is null and channel is 'dirkwa' — the
-  // honest answer the UI displays as the channel name.
-};
+async function signalkTarget(): Promise<VersionTarget> {
+  // signalk-server's /signalk endpoint returns
+  // `{ endpoints: { v1: { version: "2.27.0", ... } } }` — a clean
+  // semver from the running process itself. Same URL as the
+  // post-switch health-poll, so it inherits the pasta-network
+  // host.containers.internal fix from signalk-url-resolver.
+  return {
+    container: 'signalk-server',
+    quadletName: 'signalk-server.container',
+    signalkUrl: await resolveSignalkHealthUrl(),
+  };
+}
 
 const UPDATER_TARGET: VersionTarget = {
   container: 'signalk-updater-server',
@@ -94,8 +99,9 @@ async function inspectOne(target: VersionTarget): Promise<ContainerSnapshot> {
 }
 
 export async function getCurrentState(): Promise<CurrentState> {
+  const skTarget = await signalkTarget();
   const [sk, up, doc] = await Promise.all([
-    inspectOne(SIGNALK_TARGET),
+    inspectOne(skTarget),
     inspectOne(UPDATER_TARGET),
     inspectOne(DOCTOR_TARGET),
   ]);

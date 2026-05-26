@@ -44,6 +44,12 @@ export interface VersionTarget {
   /** Optional HTTP health endpoint that returns `{ version: "..." }`.
    *  Set for both engine containers; absent for signalk-server. */
   healthUrl?: string;
+  /** Optional signalk-server discovery endpoint that returns
+   *  `{ endpoints: { v1: { version: "..." } } }`. Used for the
+   *  signalk-server container, whose `/signalk` exposes a clean
+   *  semver under endpoints.v1.version (e.g. "2.27.0"). Distinct
+   *  from `healthUrl` because the shape differs. */
+  signalkUrl?: string;
   /** Optional shortcut for our own container: read the cached
    *  package.json version directly instead of fetching over HTTP.
    *  Set to `getSelfVersion` for the updater itself. */
@@ -62,6 +68,27 @@ async function probeHealth(url: string): Promise<string | null> {
     if (typeof body.version !== 'string') return null;
     if (body.version === '' || body.version === 'unknown') return null;
     return body.version;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+interface SignalkDiscovery {
+  endpoints?: { v1?: { version?: string } };
+}
+
+async function probeSignalkVersion(url: string): Promise<string | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    if (!res.ok) return null;
+    const body = (await res.json()) as SignalkDiscovery;
+    const v = body.endpoints?.v1?.version;
+    if (typeof v !== 'string' || v === '' || v === 'unknown') return null;
+    return v;
   } catch {
     return null;
   } finally {
@@ -122,6 +149,18 @@ export async function getRuntimeIdentity(target: VersionTarget): Promise<Runtime
   // Tier 1b: HTTP health probe to a sibling engine.
   if (target.healthUrl) {
     const v = await probeHealth(target.healthUrl);
+    if (v !== null) {
+      return { version: v, source: 'health', channel };
+    }
+  }
+
+  // Tier 1c: signalk-server discovery endpoint. Same network path as
+  // the post-switch health-poll (resolved via signalk-url-resolver in
+  // the rest of the codebase, but the resolver lives outside this
+  // module's import graph — we pass the resolved URL in via the
+  // VersionTarget instead so this module stays a pure resolver).
+  if (target.signalkUrl) {
+    const v = await probeSignalkVersion(target.signalkUrl);
     if (v !== null) {
       return { version: v, source: 'health', channel };
     }
