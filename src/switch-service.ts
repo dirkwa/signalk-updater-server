@@ -115,13 +115,18 @@ async function doSwitch(input: SwitchInput): Promise<SwitchResult> {
     from: previousImage,
     message: 'Reloading systemd and restarting signalk-server…',
   });
-  // Use stopUnit + startUnit instead of restartUnit. Under `Restart=always`,
-  // signalk-server fails to trap SIGTERM, gets SIGKILL'd by podman after
-  // the 10s grace (status=137), and systemd's auto-restart timer takes over
-  // — adding ~90s before the new container actually starts even though our
-  // DBus restart request was already in the queue. An intentional Stop
-  // bypasses the `Restart=` policy (per systemd.service(5)), so the new
-  // container starts immediately after the old one is fully down.
+  // Use stopUnit + startUnit instead of restartUnit. When the old
+  // container exits non-zero (status=137 from SIGKILL because
+  // signalk-server doesn't trap SIGTERM; or status=143 even on a clean
+  // SIGTERM exit because systemd treats signal-deaths as failures), the
+  // `Restart=` policy schedules an auto-restart on top of our DBus
+  // restart request — adding a ~90s gap before the new container
+  // actually starts. An intentional Stop suppresses the Restart= policy
+  // for that transition (per systemd.service(5)), so the unit goes
+  // Stop → inactive → Start with no auto-restart delay. Observed on
+  // both signalk-server (Restart=always) and the doctor/updater
+  // (Restart=on-failure) — the auto-restart timer fires regardless of
+  // policy choice, only the trigger condition differs.
   const dbusOk = await safe(async () => {
     await daemonReload();
     publishSwitchEvent({
