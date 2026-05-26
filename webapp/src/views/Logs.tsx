@@ -21,6 +21,13 @@ const SCROLL_SLACK = 30;
 interface LogRow {
   id: number;
   time: string | null;
+  /**
+   * True when `time` was synthesised from the SSE arrival moment because the
+   * log line itself carried no timestamp (signalk-server's morgan access log
+   * format omits one). The renderer prefixes approximated times with "~" so
+   * the user can tell at a glance which timestamps came from the source.
+   */
+  timeApproximated: boolean;
   level: string;
   message: string;
 }
@@ -79,9 +86,17 @@ export function Logs() {
       if (pausedRef.current) return;
       const parsed = parseLogLine(ev.data);
       const id = nextIdRef.current++;
+      // Fall back to the SSE arrival moment when the line has no embedded
+      // timestamp (signalk-server's morgan logger emits none); mark the row
+      // so the renderer can flag it as approximate rather than authoritative.
+      const time = parsed.time ?? new Date().toISOString();
+      const timeApproximated = parsed.time === null;
       setRows((prev) => {
         const next = prev.length >= MAX_ROWS ? prev.slice(prev.length - MAX_ROWS + 1) : prev;
-        return [...next, { id, time: parsed.time, level: parsed.level, message: parsed.message }];
+        return [
+          ...next,
+          { id, time, timeApproximated, level: parsed.level, message: parsed.message },
+        ];
       });
     };
     es.addEventListener('end', (ev): void => {
@@ -89,7 +104,13 @@ export function Logs() {
       const id = nextIdRef.current++;
       setRows((prev) => [
         ...prev,
-        { id, time: null, level: '', message: `[stream ended: ${data}]` },
+        {
+          id,
+          time: null,
+          timeApproximated: false,
+          level: '',
+          message: `[stream ended: ${data}]`,
+        },
       ]);
       teardown();
     });
@@ -202,8 +223,16 @@ export function Logs() {
         ) : (
           rows.map((r) => (
             <div key={r.id} className={`d-flex gap-2 ${logLevelClass(r.level)}`}>
-              <span className="text-muted flex-shrink-0" style={{ width: '5rem' }}>
-                {fmtLogTime(r.time)}
+              <span
+                className="text-muted flex-shrink-0"
+                style={{ width: '5rem' }}
+                title={
+                  r.timeApproximated
+                    ? 'Source line had no timestamp; using SSE arrival time'
+                    : undefined
+                }
+              >
+                {r.time ? `${r.timeApproximated ? '~' : ''}${fmtLogTime(r.time)}` : ''}
               </span>
               <span className="text-muted flex-shrink-0" style={{ width: '3.5rem' }}>
                 {r.level}
