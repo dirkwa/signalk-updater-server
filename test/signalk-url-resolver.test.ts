@@ -123,6 +123,13 @@ describe('resolveDoctorHealthUrl', () => {
     expect(await resolveDoctorHealthUrl()).toBe('http://127.0.0.1:3004/api/health');
   });
 
+  it('falls back to loopback in a container when host.containers.internal does not resolve', async () => {
+    mockExistsSync.mockReturnValue(true);
+    mockLookup.mockRejectedValue(new Error('ENOTFOUND'));
+    const { resolveDoctorHealthUrl } = await import('../src/signalk-url-resolver.js');
+    expect(await resolveDoctorHealthUrl()).toBe('http://127.0.0.1:3004/api/health');
+  });
+
   it('shares the container-host fallback with the signalk resolvers', async () => {
     mockExistsSync.mockReturnValue(true);
     mockLookup.mockResolvedValue({ address: '10.0.2.2', family: 4 });
