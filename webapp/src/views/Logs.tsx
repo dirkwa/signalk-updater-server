@@ -182,7 +182,13 @@ export function Logs() {
         ref={outRef}
         className="border rounded p-2 font-monospace small"
         style={{
-          maxHeight: '60vh',
+          // Fill the visible viewport minus the page header (logo + tabs +
+          // filter row). The 240px allowance is a one-time approximation;
+          // min-height keeps the panel usable on very short windows. Was
+          // a fixed maxHeight: 60vh, which left ~40vh of empty space at
+          // the bottom when iframed in the SignalK admin sidebar.
+          height: 'calc(100vh - 240px)',
+          minHeight: '20vh',
           overflowY: 'auto',
           background: 'var(--bs-body-bg)',
           whiteSpace: 'pre-wrap',
