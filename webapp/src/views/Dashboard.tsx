@@ -442,6 +442,19 @@ export function Dashboard() {
                           : '—'
                     }
                   />
+                  <SnapshotRow label="Last checked">
+                    <span className="d-inline-flex align-items-baseline gap-2">
+                      <span className="text-muted small">{lastChecked}</span>
+                      <Button
+                        color="link"
+                        size="sm"
+                        className="p-0 small"
+                        onClick={() => void checkNow()}
+                      >
+                        Check now
+                      </Button>
+                    </span>
+                  </SnapshotRow>
                 </>
               ) : (
                 <Spinner size="sm" />
