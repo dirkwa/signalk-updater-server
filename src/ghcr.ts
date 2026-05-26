@@ -130,10 +130,11 @@ async function fetchTagPublishedAt(
   // manifest descent or the blob fetch. Two round-trips saved per
   // cache-hit tag.
   if (headerDigest && pushedAtByDigest.has(headerDigest)) {
-    return {
-      digest: headerDigest,
-      pushedAt: pushedAtByDigest.get(headerDigest) ?? null,
-    };
+    const cached = pushedAtByDigest.get(headerDigest);
+    // `cached` is `string | null | undefined` under noUncheckedIndexedAccess;
+    // the prior `has()` guarantees `string | null`, but coerce explicitly
+    // so the narrowing is visible to the reader.
+    return { digest: headerDigest, pushedAt: cached ?? null };
   }
 
   // Within-scan dedup: if another worker is already fetching this
@@ -141,8 +142,9 @@ async function fetchTagPublishedAt(
   // request. Saves N-1 blob roundtrips per shared-digest cluster
   // during a cold scan (typical for releases that touched `:latest`
   // and a semver tag in lockstep).
-  if (headerDigest && pendingByDigest.has(headerDigest)) {
-    const pushedAt = await pendingByDigest.get(headerDigest)!;
+  const inFlight = headerDigest ? pendingByDigest.get(headerDigest) : undefined;
+  if (inFlight !== undefined) {
+    const pushedAt = await inFlight;
     return { digest: headerDigest, pushedAt };
   }
 
@@ -257,8 +259,8 @@ async function fetchTagsConcurrent(image: string, names: string[], token: string
   async function worker(): Promise<void> {
     while (true) {
       const i = next++;
-      if (i >= names.length) return;
-      const name = names[i]!;
+      const name = names[i];
+      if (name === undefined) return;
       try {
         const { digest, pushedAt } = await fetchTagPublishedAt(image, name, token);
         results[i] = { name, channel: classifyChannel(name), digest, pushedAt };
