@@ -6,12 +6,12 @@ import { preSwitchBackup, type BackupResult } from './backup.js';
 import { DEFAULT_HEALTH_TIMEOUT_MS, pollHealth, pullImage, trialRun } from './container-ops.js';
 import { publishSwitchEvent } from './switch-progress-broker.js';
 import { refreshDoctorDrift } from './drift-client.js';
+import { resolveSignalkHealthUrl } from './signalk-url-resolver.js';
 import type { SwitchResult } from './types.js';
 
 const SIGNALK_IMAGE = process.env.SIGNALK_IMAGE ?? 'ghcr.io/dirkwa/signalk-server';
 const SIGNALK_QUADLET = 'signalk-server.container';
 const SIGNALK_UNIT = 'signalk-server.service';
-const SIGNALK_HEALTH_URL = process.env.SIGNALK_HEALTH_URL ?? 'http://127.0.0.1:3000/signalk';
 const TRIAL_NAME_PREFIX = 'signalk-updater-trial';
 
 interface SwitchInput {
@@ -160,7 +160,8 @@ async function doSwitch(input: SwitchInput): Promise<SwitchResult> {
     message: 'Waiting for signalk-server to become healthy…',
   });
   const timeoutMs = input.healthTimeoutMs ?? DEFAULT_HEALTH_TIMEOUT_MS;
-  const healthy = await pollHealth(SIGNALK_HEALTH_URL, timeoutMs, (p) => {
+  const healthUrl = await resolveSignalkHealthUrl();
+  const healthy = await pollHealth(healthUrl, timeoutMs, (p) => {
     // Re-emit on each attempt so the UI shows progress instead of going
     // silent for the (potentially) 3 minutes the wait can take. Same
     // `stage: health-poll`; only the message changes.
