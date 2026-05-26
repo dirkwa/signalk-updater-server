@@ -1,4 +1,4 @@
-import { useCallback, type ReactNode } from 'react';
+import { useCallback, useState, type ReactNode } from 'react';
 import {
   Alert,
   Badge,
@@ -174,6 +174,14 @@ export function Dashboard() {
     intervalMs: 5 * 60 * 1000,
   });
 
+  // True while `POST /api/updates/check` is in flight. The endpoint can
+  // take 20–60s on a slow VM (sequential per-tag manifest fetches against
+  // GHCR), well past the 4s toast lifetime — without this, the
+  // "Checking…" toast auto-dismisses and the user sees nothing happening
+  // for ~30s. Disables both Check-now buttons + shows an inline spinner
+  // so it's obvious the request is alive.
+  const [isChecking, setIsChecking] = useState(false);
+
   const refreshAll = useCallback((): void => {
     void state.refresh();
     void health.refresh();
@@ -187,6 +195,8 @@ export function Dashboard() {
    *  the publish-day window even when invalidate-on-update didn't fire
    *  (e.g. release was on a different host). */
   const checkNow = useCallback(async (): Promise<void> => {
+    if (isChecking) return;
+    setIsChecking(true);
     try {
       toast.show('Checking for updates…', 'info');
       await api('/api/updates/check', { method: 'POST' });
@@ -204,8 +214,10 @@ export function Dashboard() {
         'err',
         6000,
       );
+    } finally {
+      setIsChecking(false);
     }
-  }, [toast, updates, self, doctor]);
+  }, [isChecking, toast, updates, self, doctor]);
 
   const lifecycle = useCallback(
     async (action: 'start' | 'stop' | 'restart'): Promise<void> => {
@@ -386,8 +398,9 @@ export function Dashboard() {
                         size="sm"
                         className="p-0 small"
                         onClick={() => void checkNow()}
+                        disabled={isChecking}
                       >
-                        Check now
+                        {isChecking ? 'Checking…' : 'Check now'}
                       </Button>
                     </span>
                   </SnapshotRow>
@@ -450,8 +463,9 @@ export function Dashboard() {
                         size="sm"
                         className="p-0 small"
                         onClick={() => void checkNow()}
+                        disabled={isChecking}
                       >
-                        Check now
+                        {isChecking ? 'Checking…' : 'Check now'}
                       </Button>
                     </span>
                   </SnapshotRow>
