@@ -3,6 +3,7 @@ import { compareSemver, pickLatestStable } from './tagClassifier.js';
 import { fetchDriftReport } from './drift-client.js';
 import { getRuntimeIdentity, type VersionTarget } from './runtime-version.js';
 import { getSelfVersion } from './routes/health.js';
+import { resolveDoctorHealthUrl } from './signalk-url-resolver.js';
 import type { AvailableUpdates, UpdateInfo } from './types.js';
 
 const UPDATER_IMAGE = process.env.SELF_IMAGE ?? 'ghcr.io/dirkwa/signalk-updater-server';
@@ -10,18 +11,22 @@ const DOCTOR_IMAGE = process.env.DOCTOR_IMAGE ?? 'ghcr.io/dirkwa/signalk-doctor-
 
 // Resolver targets. The updater reads its own version from the cached
 // package.json (no self-HTTP). The doctor goes over the host loopback
-// to its `/api/health`.
+// to its `/api/health`, using the signalk-url-resolver to handle the
+// pasta-network case where `127.0.0.1:3004` from inside the updater
+// container points at the updater itself, not the doctor.
 const UPDATER_TARGET: VersionTarget = {
   container: 'signalk-updater-server',
   quadletName: 'signalk-updater-server.container',
   selfVersion: getSelfVersion,
 };
 
-const DOCTOR_TARGET: VersionTarget = {
-  container: 'signalk-doctor-server',
-  quadletName: 'signalk-doctor-server.container',
-  healthUrl: process.env.DOCTOR_HEALTH_URL ?? 'http://127.0.0.1:3004/api/health',
-};
+async function doctorTarget(): Promise<VersionTarget> {
+  return {
+    container: 'signalk-doctor-server',
+    quadletName: 'signalk-doctor-server.container',
+    healthUrl: await resolveDoctorHealthUrl(),
+  };
+}
 
 // 24h interval keeps GHCR API hits to ~2 per day. Even unauthenticated
 // pulls are well inside ghcr.io's per-IP budget (~50 req/h) at that rate.
@@ -99,9 +104,10 @@ export async function triggerCheck(log?: MinimalLogger): Promise<AvailableUpdate
   // returns null when the doctor is unreachable, malformed, or has
   // nothing to show yet). That keeps a slow / down doctor from blocking
   // the engine check that drives the badge for the engines themselves.
+  const doctorT = await doctorTarget();
   const [updater, doctor, drift] = await Promise.all([
     checkOne(UPDATER_IMAGE, UPDATER_TARGET),
-    checkOne(DOCTOR_IMAGE, DOCTOR_TARGET),
+    checkOne(DOCTOR_IMAGE, doctorT),
     fetchDriftReport(),
   ]);
   cache = {

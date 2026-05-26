@@ -3,7 +3,7 @@ import { resolveRuntime } from './podman/client.js';
 import { getRuntimeIdentity, type VersionTarget } from './runtime-version.js';
 import { readQuadletImageTag } from './quadlet-image-tag.js';
 import { getSelfVersion } from './routes/health.js';
-import { resolveSignalkHealthUrl } from './signalk-url-resolver.js';
+import { resolveDoctorHealthUrl, resolveSignalkHealthUrl } from './signalk-url-resolver.js';
 
 // Per-container targets for the RuntimeIdentity resolver. Quadlet names
 // are static (the installer drops them under ~/.config/containers/systemd
@@ -30,11 +30,16 @@ const UPDATER_TARGET: VersionTarget = {
   selfVersion: getSelfVersion,
 };
 
-const DOCTOR_TARGET: VersionTarget = {
-  container: 'signalk-doctor-server',
-  quadletName: 'signalk-doctor-server.container',
-  healthUrl: process.env.DOCTOR_HEALTH_URL ?? 'http://127.0.0.1:3004/api/health',
-};
+async function doctorTarget(): Promise<VersionTarget> {
+  // Goes through resolveDoctorHealthUrl so pasta-network (127.0.0.1
+  // inside this container ≠ the doctor's host:3004) doesn't silently
+  // make the probe fail. Same pattern as signalkTarget above.
+  return {
+    container: 'signalk-doctor-server',
+    quadletName: 'signalk-doctor-server.container',
+    healthUrl: await resolveDoctorHealthUrl(),
+  };
+}
 
 function classifyState(status: string | undefined): ContainerSnapshot['state'] {
   const s = (status ?? 'missing').toLowerCase();
@@ -99,11 +104,11 @@ async function inspectOne(target: VersionTarget): Promise<ContainerSnapshot> {
 }
 
 export async function getCurrentState(): Promise<CurrentState> {
-  const skTarget = await signalkTarget();
+  const [skTarget, docTarget] = await Promise.all([signalkTarget(), doctorTarget()]);
   const [sk, up, doc] = await Promise.all([
     inspectOne(skTarget),
     inspectOne(UPDATER_TARGET),
-    inspectOne(DOCTOR_TARGET),
+    inspectOne(docTarget),
   ]);
   return {
     signalkServer: sk,

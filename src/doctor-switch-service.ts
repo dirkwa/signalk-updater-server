@@ -4,6 +4,7 @@ import { daemonReload, startUnit, stopUnitAndWait } from './dbus/systemd-user.js
 import { withMutex } from './mutex.js';
 import { DEFAULT_HEALTH_TIMEOUT_MS, pollHealth, pullImage, trialRun } from './container-ops.js';
 import { invalidate as invalidateUpdatesCache } from './update-checker.js';
+import { resolveDoctorHealthUrl } from './signalk-url-resolver.js';
 import type { SwitchResult } from './types.js';
 
 // Same shape as switch-service.ts but pointed at the doctor's image,
@@ -13,7 +14,6 @@ import type { SwitchResult } from './types.js';
 const DOCTOR_IMAGE = process.env.DOCTOR_IMAGE ?? 'ghcr.io/dirkwa/signalk-doctor-server';
 const DOCTOR_QUADLET = 'signalk-doctor-server.container';
 const DOCTOR_UNIT = 'signalk-doctor-server.service';
-const DOCTOR_HEALTH_URL = process.env.DOCTOR_HEALTH_URL ?? 'http://127.0.0.1:3004/api/health';
 const TRIAL_NAME_PREFIX = 'signalk-doctor-trial';
 
 interface DoctorSwitchInput {
@@ -102,7 +102,8 @@ async function doDoctorSwitch(input: DoctorSwitchInput): Promise<SwitchResult> {
 
   // 5. Health poll
   const timeoutMs = input.healthTimeoutMs ?? DEFAULT_HEALTH_TIMEOUT_MS;
-  const healthy = await pollHealth(DOCTOR_HEALTH_URL, timeoutMs);
+  const healthUrl = await resolveDoctorHealthUrl();
+  const healthy = await pollHealth(healthUrl, timeoutMs);
   if (!healthy) {
     if (previousImage) {
       await rewriteQuadletImage(DOCTOR_QUADLET, previousImage).catch(() => undefined);
