@@ -15,11 +15,11 @@ import { snapshotQuadlet, pruneSnapshots } from '../quadlet/rewriter.js';
 import { daemonReload, restartUnit } from '../dbus/systemd-user.js';
 import { safe } from '../podman/client.js';
 import { requireToken } from '../auth.js';
+import { resolveSignalkHealthUrl } from '../signalk-url-resolver.js';
 
 const QUADLET_DIR = process.env.QUADLET_DIR ?? '/quadlets';
 const SERVER_QUADLET = 'signalk-server.container';
 const SERVER_UNIT = 'signalk-server.service';
-const SIGNALK_HEALTH_URL = process.env.SIGNALK_HEALTH_URL ?? 'http://127.0.0.1:3000/signalk';
 
 async function fsyncDir(dir: string): Promise<void> {
   const fh = await open(dir, 'r');
@@ -74,7 +74,8 @@ export async function registerHardwareRoutes(app: FastifyInstance): Promise<void
             return { ok: false, error: `systemd: ${dbusOk.error.userMessage}` };
           }
 
-          const healthy = await pollHealth(SIGNALK_HEALTH_URL, 120000);
+          const healthUrl = await resolveSignalkHealthUrl();
+          const healthy = await pollHealth(healthUrl, 120000);
           return {
             ok: healthy,
             hardware: next,

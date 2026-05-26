@@ -1,8 +1,8 @@
 import { resolveRuntime } from './podman/client.js';
+import { resolveSignalkBaseUrl } from './signalk-url-resolver.js';
 
 const BACKUP_SERVER = 'signalk-backup-server';
 const BACKUP_SERVER_URL = process.env.BACKUP_SERVER_URL ?? 'http://127.0.0.1:3010';
-const SIGNALK_URL = process.env.SIGNALK_URL ?? 'http://127.0.0.1:3000';
 const BACKUP_PLUGIN_PATH = '/plugins/signalk-backup/api/snapshot';
 
 export type BackupResult =
@@ -33,7 +33,8 @@ async function postSnapshot(url: string): Promise<{ ok: boolean; error?: string 
 
 async function postPluginSnapshot(): Promise<{ ok: boolean; error?: string }> {
   try {
-    const res = await fetch(`${SIGNALK_URL}${BACKUP_PLUGIN_PATH}`, { method: 'POST' });
+    const baseUrl = await resolveSignalkBaseUrl();
+    const res = await fetch(`${baseUrl}${BACKUP_PLUGIN_PATH}`, { method: 'POST' });
     if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
     return { ok: true };
   } catch (err) {
