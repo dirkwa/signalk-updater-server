@@ -59,6 +59,29 @@ describe('parseLogLine', () => {
     const r = parseLogLine('{not valid json');
     expect(r.message).toBe('{not valid json');
   });
+
+  it('strips ANSI CSI escape sequences from bare lines (morgan/signalk-server)', () => {
+    // morgan-style: GET /path 200 0.123 ms - 746 with status code colorized.
+    // Escapes written as \u001b so the source has no literal control bytes.
+    const ESC = '\u001b';
+    const line = `${ESC}[0mGET /signalk/v1/x ${ESC}[32m200${ESC}[0m 0.123 ms - 746${ESC}[0m`;
+    const r = parseLogLine(line);
+    expect(r.message).toBe('GET /signalk/v1/x 200 0.123 ms - 746');
+    // Built via RegExp() to keep no-control-regex satisfied.
+    expect(r.message).not.toMatch(new RegExp(ESC));
+  });
+
+  it('strips ANSI escapes inside pino JSON string values too', () => {
+    const ESC = '\u001b';
+    const raw = `{"level":30,"time":1700000000000,"msg":"hello ${ESC}[32mworld${ESC}[0m"}`;
+    const r = parseLogLine(raw);
+    expect(r.message).toBe('hello world');
+    expect(r.level).toBe('info');
+  });
+
+  it('handles standalone reset escape', () => {
+    expect(parseLogLine('\u001b[0m').message).toBe('');
+  });
 });
 
 describe('logLevelClass', () => {

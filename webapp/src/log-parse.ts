@@ -30,14 +30,34 @@ const LEVEL_RX_WORD = /\b(trace|debug|info|warn(?:ing)?|error|fatal)\b/i;
 const TS_RX_FRONT = /^(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?)\s*/;
 const TS_RX_PINO = /"time":(\d{10,13})/;
 
+// ANSI CSI escape sequences emitted by terminal-coloured loggers
+// (signalk-server's morgan access logs wrap status codes in green).
+// Stripped before rendering — the UI applies its own level-based colours
+// via logLevelClass(); the raw control bytes render as garbled glyphs
+// otherwise. ESC (\u001b) introduces every CSI sequence; the regex source
+// has a literal ESC byte, which ESLint's no-control-regex rule flags as
+// suspicious. The control char is exactly what we want to match here, so
+// we acknowledge with a targeted disable.
+// eslint-disable-next-line no-control-regex
+const ANSI_CSI_RX = /\[[0-9;?]*[A-Za-z]/g;
+
+function stripAnsi(value: string): string {
+  return value.replace(ANSI_CSI_RX, '');
+}
+
 const PINO_RESERVED = new Set(['level', 'time', 'msg', 'message', 'hostname', 'pid', 'v']);
 
 export function parseLogLine(raw: string): ParsedLogLine {
   if (!raw) return { time: null, level: '', message: '', raw };
 
-  if (raw.startsWith('{')) {
+  // Strip ANSI escapes for parsing and rendering; keep the original `raw`
+  // intact so consumers that want the exact byte sequence still have it
+  // (debug logging, copy-to-clipboard, etc).
+  const cleaned = stripAnsi(raw);
+
+  if (cleaned.startsWith('{')) {
     try {
-      const obj = JSON.parse(raw) as Record<string, unknown>;
+      const obj = JSON.parse(cleaned) as Record<string, unknown>;
       const lvlNum = obj.level;
       let level = '';
       if (typeof lvlNum === 'number' && lvlNum in PINO_LEVELS) {
@@ -77,7 +97,7 @@ export function parseLogLine(raw: string): ParsedLogLine {
     }
   }
 
-  let line = raw;
+  let line = cleaned;
   let time: string | null = null;
   const tsMatch = line.match(TS_RX_FRONT);
   if (tsMatch && tsMatch[1] !== undefined && tsMatch[0] !== undefined) {
