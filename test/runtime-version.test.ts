@@ -122,6 +122,66 @@ describe('getRuntimeIdentity — health probe', () => {
   });
 });
 
+describe('getRuntimeIdentity — signalk discovery probe', () => {
+  it('reads endpoints.v1.version from /signalk', async () => {
+    await writeQuadlet('server.container', 'ghcr.io/dirkwa/signalk-server:dirkwa');
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ endpoints: { v1: { version: '2.27.0' } } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+    ) as typeof fetch;
+    const { getRuntimeIdentity } = await import('../src/runtime-version.js');
+    const identity = await getRuntimeIdentity({
+      container: 'signalk-server',
+      quadletName: 'server.container',
+      signalkUrl: 'http://host.containers.internal:3000/signalk',
+    });
+    expect(identity).toEqual({ version: '2.27.0', source: 'health', channel: 'dirkwa' });
+  });
+
+  it('falls through when /signalk returns the wrong shape', async () => {
+    await writeQuadlet('server.container', 'ghcr.io/dirkwa/signalk-server:2.26.0');
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ unrelated: true }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+    ) as typeof fetch;
+    mockResolveRuntime.mockResolvedValue(null);
+    const { getRuntimeIdentity } = await import('../src/runtime-version.js');
+    const identity = await getRuntimeIdentity({
+      container: 'signalk-server',
+      quadletName: 'server.container',
+      signalkUrl: 'http://host.containers.internal:3000/signalk',
+    });
+    // Falls through to quadlet-tag (2.26.0 is a valid semver).
+    expect(identity).toEqual({ version: '2.26.0', source: 'quadlet-tag', channel: 'stable' });
+  });
+
+  it('ignores empty version string from /signalk', async () => {
+    await writeQuadlet('server.container', 'ghcr.io/dirkwa/signalk-server:dirkwa');
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ endpoints: { v1: { version: '' } } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+    ) as typeof fetch;
+    mockResolveRuntime.mockResolvedValue(null);
+    const { getRuntimeIdentity } = await import('../src/runtime-version.js');
+    const identity = await getRuntimeIdentity({
+      container: 'signalk-server',
+      quadletName: 'server.container',
+      signalkUrl: 'http://host.containers.internal:3000/signalk',
+    });
+    expect(identity.version).toBeNull();
+    expect(identity.channel).toBe('dirkwa');
+  });
+});
+
 describe('getRuntimeIdentity — OCI image label', () => {
   it('reads org.opencontainers.image.version from the image inspect', async () => {
     await writeQuadlet('server.container', 'ghcr.io/dirkwa/signalk-server:dirkwa');
