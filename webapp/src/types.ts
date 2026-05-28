@@ -60,6 +60,7 @@ export interface HealthResponse {
   socketPath?: string;
   uptimeSeconds: number;
   version: string;
+  runtimeVersion?: string;
 }
 
 export interface SelfState {

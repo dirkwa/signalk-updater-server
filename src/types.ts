@@ -223,4 +223,7 @@ export interface HealthResponse {
   /** Engine container's own package.json version, surfaced so a
    *  user's screenshot can be traced to a specific release. */
   version: string;
+  /** Container runtime version (e.g. "4.9.5" for podman). Undefined when
+   *  the runtime's `/version` endpoint couldn't be read. */
+  runtimeVersion?: string;
 }

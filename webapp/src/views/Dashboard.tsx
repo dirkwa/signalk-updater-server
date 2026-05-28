@@ -57,9 +57,12 @@ function SnapshotRow({
   children?: ReactNode;
 }) {
   return (
-    <div className="d-flex justify-content-between align-items-baseline mb-1">
-      <span className="text-muted small">{label}</span>
-      <span className="text-truncate ms-2" style={{ maxWidth: '60%' }}>
+    <div className="d-flex justify-content-between align-items-baseline mb-1 gap-2">
+      <span className="text-muted small flex-shrink-0">{label}</span>
+      <span
+        className="text-end text-truncate"
+        title={typeof value === 'string' ? value : undefined}
+      >
         {children ?? value ?? '—'}
       </span>
     </div>
@@ -178,35 +181,30 @@ export function Dashboard() {
   // take 20–60s on a slow VM (sequential per-tag manifest fetches against
   // GHCR), well past the 4s toast lifetime — without this, the
   // "Checking…" toast auto-dismisses and the user sees nothing happening
-  // for ~30s. Disables both Check-now buttons + shows an inline spinner
+  // for ~30s. Disables the Check-now button + shows an inline spinner
   // so it's obvious the request is alive.
   const [isChecking, setIsChecking] = useState(false);
-
-  const refreshAll = useCallback((): void => {
-    void state.refresh();
-    void health.refresh();
-    void self.refresh();
-    void doctor.refresh();
-    void updates.refresh();
-  }, [state, health, self, doctor, updates]);
 
   /** Manual cache refresh — POSTs /api/updates/check which busts the
    *  in-memory cache and refires the GHCR probe. The escape hatch for
    *  the publish-day window even when invalidate-on-update didn't fire
-   *  (e.g. release was on a different host). */
+   *  (e.g. release was on a different host). Also re-pulls state /
+   *  health / self / doctor so the whole dashboard reflects the result
+   *  without waiting for the next polling tick — this replaces the
+   *  separate "Refresh" button. */
   const checkNow = useCallback(async (): Promise<void> => {
     if (isChecking) return;
     setIsChecking(true);
     try {
       toast.show('Checking for updates…', 'info');
       await api('/api/updates/check', { method: 'POST' });
-      // /api/updates/check busts ghcr.ts's listTags cache (see
-      // update-checker.ts triggerCheck). The Updater + Doctor cards
-      // read /api/self/state and /api/doctor/state respectively —
-      // both call back into listTags — so refresh them too so the
-      // "Available: X" rows reflect the fresh result without waiting
-      // 30s for the next polling tick.
-      await Promise.all([updates.refresh(), self.refresh(), doctor.refresh()]);
+      await Promise.all([
+        state.refresh(),
+        health.refresh(),
+        self.refresh(),
+        doctor.refresh(),
+        updates.refresh(),
+      ]);
       toast.show('Update check complete', 'ok');
     } catch (err) {
       toast.show(
@@ -217,7 +215,7 @@ export function Dashboard() {
     } finally {
       setIsChecking(false);
     }
-  }, [isChecking, toast, updates, self, doctor]);
+  }, [isChecking, toast, state, health, self, doctor, updates]);
 
   const lifecycle = useCallback(
     async (action: 'start' | 'stop' | 'restart'): Promise<void> => {
@@ -292,16 +290,27 @@ export function Dashboard() {
     }
   }, [confirm, doctor, state, updates, toast]);
 
-  const doctorUrl = `${window.location.protocol}//${window.location.hostname}:3004/`;
-
   const lastChecked = updates.data?.lastCheckedAt ? relTime(updates.data.lastCheckedAt) : 'never';
 
   return (
     <>
       <div className="d-flex justify-content-between align-items-center mb-3">
         <h2 className="mb-0">Dashboard</h2>
-        <Button color="secondary" outline size="sm" onClick={refreshAll}>
-          Refresh
+        <Button
+          color="primary"
+          outline
+          size="sm"
+          onClick={() => void checkNow()}
+          disabled={isChecking}
+        >
+          {isChecking ? (
+            <>
+              <Spinner size="sm" className="me-2" />
+              Checking…
+            </>
+          ) : (
+            'Check now'
+          )}
         </Button>
       </div>
 
@@ -312,7 +321,7 @@ export function Dashboard() {
       ) : null}
 
       <Row>
-        <Col xs={12} md={4} className="mb-3">
+        <Col xs={12} lg={4} className="mb-3">
           <Card>
             <CardHeader className="d-flex justify-content-between align-items-center">
               <strong>SignalK Server</strong>
@@ -357,7 +366,7 @@ export function Dashboard() {
           </Card>
         </Col>
 
-        <Col xs={12} md={4} className="mb-3">
+        <Col xs={12} lg={4} className="mb-3">
           <Card>
             <CardHeader className="d-flex justify-content-between align-items-center">
               <strong>Updater</strong>
@@ -390,20 +399,7 @@ export function Dashboard() {
                           : '—'
                     }
                   />
-                  <SnapshotRow label="Last checked">
-                    <span className="d-inline-flex align-items-baseline gap-2">
-                      <span className="text-muted small">{lastChecked}</span>
-                      <Button
-                        color="link"
-                        size="sm"
-                        className="p-0 small"
-                        onClick={() => void checkNow()}
-                        disabled={isChecking}
-                      >
-                        {isChecking ? 'Checking…' : 'Check now'}
-                      </Button>
-                    </span>
-                  </SnapshotRow>
+                  <SnapshotRow label="Last checked" value={lastChecked} />
                 </>
               ) : (
                 <Spinner size="sm" />
@@ -422,7 +418,7 @@ export function Dashboard() {
           </Card>
         </Col>
 
-        <Col xs={12} md={4} className="mb-3">
+        <Col xs={12} lg={4} className="mb-3">
           <Card>
             <CardHeader className="d-flex justify-content-between align-items-center">
               <strong>Doctor</strong>
@@ -455,29 +451,13 @@ export function Dashboard() {
                           : '—'
                     }
                   />
-                  <SnapshotRow label="Last checked">
-                    <span className="d-inline-flex align-items-baseline gap-2">
-                      <span className="text-muted small">{lastChecked}</span>
-                      <Button
-                        color="link"
-                        size="sm"
-                        className="p-0 small"
-                        onClick={() => void checkNow()}
-                        disabled={isChecking}
-                      >
-                        {isChecking ? 'Checking…' : 'Check now'}
-                      </Button>
-                    </span>
-                  </SnapshotRow>
+                  <SnapshotRow label="Last checked" value={lastChecked} />
                 </>
               ) : (
                 <Spinner size="sm" />
               )}
             </CardBody>
-            <div className="card-footer d-flex gap-2">
-              <Button size="sm" color="secondary" outline tag="a" href={doctorUrl}>
-                Open Doctor Console
-              </Button>
+            <div className="card-footer">
               <Button
                 size="sm"
                 color="primary"
@@ -496,6 +476,7 @@ export function Dashboard() {
         {state.data ? `${fmtTime(state.data.lastCheck)} (${relTime(state.data.lastCheck)})` : '—'}
         {' · '}
         Runtime: {health.data?.runtime ?? (health.loading ? 'loading…' : 'unreachable')}
+        {health.data?.runtimeVersion ? ` ${health.data.runtimeVersion}` : ''}
       </p>
     </>
   );
