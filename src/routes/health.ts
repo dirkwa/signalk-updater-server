@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type Docker from 'dockerode';
 import type { HealthResponse } from '../types.js';
 import { resolveRuntime } from '../podman/client.js';
 
@@ -37,15 +38,26 @@ export function getSelfVersion(): string {
   return cachedVersion;
 }
 
+async function probeRuntimeVersion(client: Docker): Promise<string | undefined> {
+  try {
+    const v = (await client.version()) as { Version?: string };
+    return typeof v.Version === 'string' && v.Version.length > 0 ? v.Version : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function registerHealthRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/health', async (): Promise<HealthResponse> => {
     const runtime = await resolveRuntime();
+    const runtimeVersion = runtime ? await probeRuntimeVersion(runtime.client) : undefined;
     return {
       ok: runtime !== null,
       runtime: runtime?.kind ?? 'unknown',
       socketPath: runtime?.socketPath,
       uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
       version: cachedVersion,
+      runtimeVersion,
     };
   });
 }
