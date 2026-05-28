@@ -4,7 +4,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type Docker from 'dockerode';
 import type { HealthResponse } from '../types.js';
-import { resolveRuntime } from '../podman/client.js';
+import { resolveRuntime, safe } from '../podman/client.js';
 
 const startedAt = Date.now();
 
@@ -39,12 +39,10 @@ export function getSelfVersion(): string {
 }
 
 async function probeRuntimeVersion(client: Docker): Promise<string | undefined> {
-  try {
-    const v = (await client.version()) as { Version?: string };
-    return typeof v.Version === 'string' && v.Version.length > 0 ? v.Version : undefined;
-  } catch {
-    return undefined;
-  }
+  const r = await safe(async () => (await client.version()) as { Version?: string });
+  if (!r.ok) return undefined;
+  const v = r.value;
+  return typeof v.Version === 'string' && v.Version.length > 0 ? v.Version : undefined;
 }
 
 export async function registerHealthRoutes(app: FastifyInstance): Promise<void> {
