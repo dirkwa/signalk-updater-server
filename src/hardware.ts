@@ -41,12 +41,28 @@ export interface GpioDevice {
   enabled: boolean;
 }
 
+// Written host-side by `signalk socketcan` (installer/linux/signalk-
+// socketcan.tmpl in signalk-universal-installer). Read-only from the
+// updater's perspective — the updater never mutates this field; it just
+// surfaces it through GET /api/hardware so a future UI Hardware tab can
+// render the candidate without reaching for the raw file.
+export interface SocketCanCandidate {
+  writtenAt: string;
+  hat: string;
+  displayName: string;
+  configTxtOverlays: string[];
+  bitrate: number;
+  configApplied: boolean;
+  ipLinkUp: boolean;
+}
+
 export interface HardwareJson {
   detectedAt?: string;
   serial: Omit<SerialDevice, 'kind'>[];
   can: Omit<CanDevice, 'kind'>[];
   bluetooth: Omit<BluetoothDevice, 'kind'>;
   gpio: Omit<GpioDevice, 'kind'>;
+  socketcanCandidate?: SocketCanCandidate;
 }
 
 export interface HardwareApplyRequest {
@@ -73,6 +89,7 @@ export async function readHardware(): Promise<HardwareJson> {
       can: parsed.can ?? [],
       bluetooth: parsed.bluetooth ?? EMPTY_HARDWARE.bluetooth,
       gpio: parsed.gpio ?? EMPTY_HARDWARE.gpio,
+      socketcanCandidate: parsed.socketcanCandidate,
     };
   } catch {
     return { ...EMPTY_HARDWARE };

@@ -1,4 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   applyToHardware,
   renderHardwareBlock,
@@ -94,5 +97,53 @@ describe('spliceHardwareBlock', () => {
     expect(out).toContain('# === BEGIN HARDWARE');
     expect(out).toContain('AddDevice=/dev/x');
     expect(out).toContain('# === END HARDWARE');
+  });
+});
+
+describe('readHardware', () => {
+  // The candidate field is written host-side by `signalk socketcan`
+  // (signalk-universal-installer#72) and must survive readHardware()'s
+  // explicit destructure so GET /api/hardware can surface it. The
+  // previous destructure dropped any unknown key on the floor.
+  it('passes socketcanCandidate through end-to-end', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'updater-hardware-'));
+    const path = join(dir, 'hardware.json');
+    const candidate = {
+      writtenAt: '2026-05-30T10:30:00Z',
+      hat: 'waveshare-2ch-mcp2515',
+      displayName: 'Waveshare 2-CH CAN HAT (dual MCP2515)',
+      configTxtOverlays: [
+        'dtoverlay=mcp2515-can0,oscillator=16000000,interrupt=25',
+        'dtoverlay=mcp2515-can1,oscillator=16000000,interrupt=24',
+        'dtoverlay=spi-bcm2835-overlay',
+      ],
+      bitrate: 250000,
+      configApplied: false,
+      ipLinkUp: false,
+    };
+    await writeFile(
+      path,
+      JSON.stringify({
+        serial: [],
+        can: [],
+        bluetooth: { dbusAvailable: false, enabled: false },
+        gpio: { platform: 'none', enabled: false },
+        socketcanCandidate: candidate,
+      }),
+      'utf8',
+    );
+
+    const previous = process.env.HARDWARE_PATH;
+    process.env.HARDWARE_PATH = path;
+    try {
+      vi.resetModules();
+      const { readHardware } = await import('../src/hardware.js');
+      const hw = await readHardware();
+      expect(hw.socketcanCandidate).toEqual(candidate);
+    } finally {
+      if (previous === undefined) delete process.env.HARDWARE_PATH;
+      else process.env.HARDWARE_PATH = previous;
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
