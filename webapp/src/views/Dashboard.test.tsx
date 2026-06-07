@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
-import { Dashboard } from './Dashboard';
+import { Dashboard, mergeImageState } from './Dashboard';
 import { ToastProvider } from '../toast';
 import { ConfirmProvider } from '../confirm';
 import type {
@@ -76,8 +76,9 @@ const sampleDoctor: DoctorState = {
 };
 
 const sampleUpdates: AvailableUpdates = {
-  updater: { currentTag: '0.6.4', updateAvailable: false },
-  doctor: { currentTag: '0.3.0', updateAvailable: false },
+  signalkServer: { currentTag: '2.28.0-beta.2', updateAvailable: false, imageState: 'in-sync' },
+  updater: { currentTag: '0.6.4', updateAvailable: false, imageState: 'in-sync' },
+  doctor: { currentTag: '0.3.0', updateAvailable: false, imageState: 'in-sync' },
   lastCheckedAt: new Date().toISOString(),
 };
 
@@ -130,5 +131,78 @@ describe('Dashboard', () => {
     renderDashboard();
     const btn = await screen.findByRole('button', { name: /self-update/i });
     expect(btn).toBeDisabled();
+  });
+
+  it('shows a restart-required notice + Restart-now button when the running image is stale', async () => {
+    // /api/state carries the instant, network-free restart-required signal
+    // (the real "newer image pulled, container not restarted" case).
+    mockFetch({
+      '/api/state': {
+        ...sampleState,
+        signalkServer: { ...sampleState.signalkServer, imageState: 'restart-required' },
+      },
+      '/api/health': sampleHealth,
+      '/api/self/state': sampleSelf,
+      '/api/doctor/state': sampleDoctor,
+      '/api/updates/available': sampleUpdates,
+    });
+    renderDashboard();
+    expect(await screen.findByText('Restart required')).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: /restart now/i })).toBeInTheDocument();
+  });
+
+  it('shows an update-available notice when the rolling tag moved on GHCR', async () => {
+    // pull-available only ever arrives via /api/updates/available (the
+    // GHCR-cadence signal); /api/state stays in-sync.
+    mockFetch({
+      '/api/state': sampleState,
+      '/api/health': sampleHealth,
+      '/api/self/state': sampleSelf,
+      '/api/doctor/state': sampleDoctor,
+      '/api/updates/available': {
+        ...sampleUpdates,
+        signalkServer: {
+          currentTag: '2.28.0-beta.2',
+          updateAvailable: false,
+          imageState: 'pull-available',
+        },
+      },
+    });
+    renderDashboard();
+    expect(await screen.findByText('Update available')).toBeInTheDocument();
+    // No "Restart now" — a pull is needed first, pointed at the Versions tab.
+    expect(screen.queryByRole('button', { name: /restart now/i })).not.toBeInTheDocument();
+  });
+});
+
+describe('mergeImageState', () => {
+  it('takes the union of the two signals', () => {
+    // restart from /api/state, pull from /api/updates → both.
+    expect(mergeImageState('restart-required', 'pull-available')).toBe('pull-and-restart');
+    expect(mergeImageState('pull-available', 'restart-required')).toBe('pull-and-restart');
+  });
+
+  it('surfaces a single drift from whichever side reports it', () => {
+    expect(mergeImageState('restart-required', 'in-sync')).toBe('restart-required');
+    expect(mergeImageState('in-sync', 'pull-available')).toBe('pull-available');
+    expect(mergeImageState(undefined, 'restart-required')).toBe('restart-required');
+    expect(mergeImageState('pull-available', undefined)).toBe('pull-available');
+  });
+
+  it('reports in-sync only when at least one side is definitely in-sync', () => {
+    expect(mergeImageState('in-sync', 'in-sync')).toBe('in-sync');
+    expect(mergeImageState('in-sync', undefined)).toBe('in-sync');
+    expect(mergeImageState('in-sync', 'unknown')).toBe('in-sync');
+  });
+
+  it('reports unknown when neither side can tell', () => {
+    expect(mergeImageState(undefined, undefined)).toBe('unknown');
+    expect(mergeImageState('unknown', 'unknown')).toBe('unknown');
+    expect(mergeImageState('unknown', undefined)).toBe('unknown');
+  });
+
+  it('a pull-and-restart on either side propagates', () => {
+    expect(mergeImageState('pull-and-restart', undefined)).toBe('pull-and-restart');
+    expect(mergeImageState(undefined, 'pull-and-restart')).toBe('pull-and-restart');
   });
 });

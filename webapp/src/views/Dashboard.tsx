@@ -24,6 +24,7 @@ import type {
   DoctorState,
   DriftPackage,
   HealthResponse,
+  ImageState,
   SelfState,
 } from '../types';
 
@@ -105,6 +106,83 @@ function StartedCell({ startedAt }: { startedAt?: string }) {
 function VersionCell({ version }: { version: string | null }) {
   if (version === null) return <span className="text-muted">—</span>;
   return <span className="font-monospace">{version}</span>;
+}
+
+/** Combine the two image-state signals into the one to display.
+ *  `/api/state` is the instant, network-free signal (so it carries
+ *  'restart-required' the moment a pull happens), while
+ *  `/api/updates/available` is refreshed on the GHCR cadence (so it's the
+ *  only one that ever reports 'pull-available'). When they disagree, take
+ *  the union: a tag can have moved on GHCR (pull-available, from updates)
+ *  AND have a pulled-but-not-restarted image (restart-required, from
+ *  state) at the same time → 'pull-and-restart'. */
+export function mergeImageState(
+  fromState: ImageState | undefined,
+  fromUpdates: ImageState | undefined,
+): ImageState {
+  const restart =
+    fromState === 'restart-required' ||
+    fromState === 'pull-and-restart' ||
+    fromUpdates === 'restart-required' ||
+    fromUpdates === 'pull-and-restart';
+  const pull =
+    fromState === 'pull-available' ||
+    fromState === 'pull-and-restart' ||
+    fromUpdates === 'pull-available' ||
+    fromUpdates === 'pull-and-restart';
+  if (restart && pull) return 'pull-and-restart';
+  if (pull) return 'pull-available';
+  if (restart) return 'restart-required';
+  // Neither found drift. If at least one side gave a definite 'in-sync',
+  // report that; otherwise we genuinely don't know.
+  if (fromState === 'in-sync' || fromUpdates === 'in-sync') return 'in-sync';
+  return 'unknown';
+}
+
+/** Drift notice for a container card. Renders nothing when in-sync or
+ *  unknown — only the actionable states earn the operator's attention.
+ *  `onRestart` is wired for containers where a restart is the local fix
+ *  (signalk-server has a Restart button; the engines self-restart on
+ *  update). Pulls are always directed to the Versions tab. */
+function ImageStateNotice({
+  imageState,
+  onRestart,
+}: {
+  imageState: ImageState;
+  onRestart?: () => void;
+}) {
+  if (imageState === 'in-sync' || imageState === 'unknown') return null;
+  const needsRestart = imageState === 'restart-required' || imageState === 'pull-and-restart';
+  const needsPull = imageState === 'pull-available' || imageState === 'pull-and-restart';
+  return (
+    <Alert color="warning" className="mt-3 mb-0 py-2 px-3 small">
+      <div className="fw-semibold mb-1">
+        {imageState === 'restart-required'
+          ? 'Restart required'
+          : imageState === 'pull-available'
+            ? 'Update available'
+            : 'Update + restart needed'}
+      </div>
+      {needsPull ? (
+        <div>
+          A newer image for this tag is on the registry.{' '}
+          <a href="#/versions">Pull it on the Versions tab</a>
+          {needsRestart ? ', then restart.' : '.'}
+        </div>
+      ) : null}
+      {needsRestart && !needsPull ? (
+        <div>
+          A newer image is already pulled but the container is still running the old one.
+          {onRestart ? '' : ' Restart it to pick up the new image.'}
+        </div>
+      ) : null}
+      {needsRestart && onRestart ? (
+        <Button color="warning" size="sm" className="mt-2" onClick={onRestart}>
+          Restart now
+        </Button>
+      ) : null}
+    </Alert>
+  );
 }
 
 const CLASSIFICATION_COLOR: Record<DriftPackage['classification'], string> = {
@@ -345,6 +423,13 @@ export function Dashboard() {
                   </SnapshotRow>
                   <StartedCell startedAt={state.data.signalkServer.startedAt} />
                   <PinnedDepsSection updates={updates.data} />
+                  <ImageStateNotice
+                    imageState={mergeImageState(
+                      state.data.signalkServer.imageState,
+                      updates.data?.signalkServer.imageState,
+                    )}
+                    onRestart={() => void lifecycle('restart')}
+                  />
                 </>
               ) : (
                 <Spinner size="sm" />
@@ -400,6 +485,12 @@ export function Dashboard() {
                     }
                   />
                   <SnapshotRow label="Last checked" value={lastChecked} />
+                  <ImageStateNotice
+                    imageState={mergeImageState(
+                      state.data.updaterServer.imageState,
+                      updates.data?.updater.imageState,
+                    )}
+                  />
                 </>
               ) : (
                 <Spinner size="sm" />
@@ -452,6 +543,12 @@ export function Dashboard() {
                     }
                   />
                   <SnapshotRow label="Last checked" value={lastChecked} />
+                  <ImageStateNotice
+                    imageState={mergeImageState(
+                      state.data.doctorServer.imageState,
+                      updates.data?.doctor.imageState,
+                    )}
+                  />
                 </>
               ) : (
                 <Spinner size="sm" />

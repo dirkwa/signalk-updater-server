@@ -2,6 +2,7 @@ import type { ContainerSnapshot, CurrentState } from './types.js';
 import { resolveRuntime } from './podman/client.js';
 import { getRuntimeIdentity, type VersionTarget } from './runtime-version.js';
 import { readQuadletImageTag } from './quadlet-image-tag.js';
+import { getImageDrift } from './image-drift.js';
 import { getSelfVersion } from './routes/health.js';
 import { resolveDoctorHealthUrl, resolveSignalkHealthUrl } from './signalk-url-resolver.js';
 
@@ -53,12 +54,19 @@ function classifyState(status: string | undefined): ContainerSnapshot['state'] {
 async function inspectOne(target: VersionTarget): Promise<ContainerSnapshot> {
   const identity = await getRuntimeIdentity(target);
   const tag = await readQuadletImageTag(target.quadletName);
+  // Image-level freshness. `checkRemote: false` keeps /api/state a hot,
+  // network-free read — the 'restart-required' case (newer image pulled,
+  // container still on the old one) is computed purely from local podman
+  // state. The 'pull-available' case needs a GHCR round-trip and is
+  // resolved on the update-checker's cadence instead (see update-checker).
+  const drift = await getImageDrift(target.container, target.quadletName, { checkRemote: false });
 
   const rt = await resolveRuntime();
   if (!rt) {
     return {
       tag,
       digest: '',
+      imageState: drift.state,
       version: identity.version,
       channel: identity.channel,
       state: 'missing',
@@ -70,20 +78,29 @@ async function inspectOne(target: VersionTarget): Promise<ContainerSnapshot> {
     const info = (await c.inspect()) as unknown as {
       Image?: string;
       ImageName?: string;
+      ImageDigest?: string;
       State?: { Status?: string; Running?: boolean; StartedAt?: string };
       Created?: string;
     };
-    let digest = '';
-    try {
-      const img = await rt.client.getImage(info.Image ?? info.ImageName ?? '').inspect();
-      const digestField = (img as unknown as { RepoDigests?: string[] }).RepoDigests?.[0] ?? '';
-      digest = digestField.includes('@') ? digestField.slice(digestField.indexOf('@') + 1) : '';
-    } catch {
-      // image gone or not inspectable; leave digest empty
+    // Prefer the running image's manifest digest (the drift resolver
+    // already read it the dangling-safe way); fall back to RepoDigests for
+    // runtimes that don't expose it. The old code read RepoDigests[0],
+    // which is EMPTY for a dangling running image — exactly the state a
+    // not-yet-restarted container is in — so the digest silently vanished.
+    let digest = drift.runningDigest ?? '';
+    if (!digest) {
+      try {
+        const img = await rt.client.getImage(info.Image ?? info.ImageName ?? '').inspect();
+        const digestField = (img as unknown as { RepoDigests?: string[] }).RepoDigests?.[0] ?? '';
+        digest = digestField.includes('@') ? digestField.slice(digestField.indexOf('@') + 1) : '';
+      } catch {
+        // image gone or not inspectable; leave digest empty
+      }
     }
     return {
       tag,
       digest,
+      imageState: drift.state,
       version: identity.version,
       channel: identity.channel,
       state: classifyState(info.State?.Status),
@@ -96,6 +113,7 @@ async function inspectOne(target: VersionTarget): Promise<ContainerSnapshot> {
     return {
       tag,
       digest: '',
+      imageState: drift.state,
       version: identity.version,
       channel: identity.channel,
       state: 'missing',

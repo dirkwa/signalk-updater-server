@@ -19,6 +19,17 @@ export type Channel = 'stable' | 'beta' | 'master' | 'dirkwa';
  *  Mirrors `Channel | 'unknown'` on src/types.ts. */
 export type ChannelOrUnknown = Channel | 'unknown';
 
+/** Mirror of src/types.ts `ImageState`. Image-level freshness of a
+ *  movable-tag container, independent of the semver. Drives the Dashboard
+ *  "restart required" / "update available" chips for rolling tags like
+ *  `:dirkwa`, where the semver never moves between builds. */
+export type ImageState =
+  | 'in-sync'
+  | 'restart-required'
+  | 'pull-available'
+  | 'pull-and-restart'
+  | 'unknown';
+
 export interface ContainerSnapshot {
   /** OperatorIntent: tag suffix from the Quadlet's `Image=` line. NOT
    *  the running version when the Quadlet pins a floating ref; use
@@ -28,6 +39,9 @@ export interface ContainerSnapshot {
    *  with the pre-runtime-version webapp; the new Dashboard renders
    *  `version`/`channel` instead. */
   digest: string;
+  /** Image-level freshness for movable-tag installs. Optional on the
+   *  wire (older webapps ignore it); absent is treated as 'unknown'. */
+  imageState?: ImageState;
   /** RuntimeIdentity: the running engine's reported version, when
    *  knowable. Resolved server-side via the health-probe → OCI-label →
    *  Quadlet-tag fallback in src/runtime-version.ts. Null when no
@@ -82,6 +96,10 @@ export interface UpdateInfo {
   currentTag: string;
   availableTag?: string;
   updateAvailable: boolean;
+  /** Image-level freshness computed with the GHCR round-trip (can report
+   *  'pull-available' in addition to 'restart-required'). Mirrors
+   *  src/types.ts. Optional; absent is treated as 'unknown'. */
+  imageState?: ImageState;
 }
 
 // Mirror of the server-side AvailableUpdates type — the daily GHCR
@@ -89,6 +107,10 @@ export interface UpdateInfo {
 // report. Drives the App-level "N updates available" badge so a user
 // sitting on Logs or Versions still sees the notification.
 export interface AvailableUpdates {
+  /** signalk-server's image-level freshness (image-state-only; no semver
+   *  stream tracked). `imageState` is the meaningful field;
+   *  `updateAvailable` is always false. Mirrors src/types.ts. */
+  signalkServer: UpdateInfo;
   updater: UpdateInfo;
   doctor: UpdateInfo;
   signalkDeps?: DriftReport;
