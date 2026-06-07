@@ -2,8 +2,9 @@ import { clearListTagsCache, listTags } from './ghcr.js';
 import { compareSemver, pickLatestStable } from './tagClassifier.js';
 import { fetchDriftReport } from './drift-client.js';
 import { getRuntimeIdentity, type VersionTarget } from './runtime-version.js';
+import { getImageDrift } from './image-drift.js';
 import { getSelfVersion } from './routes/health.js';
-import { resolveDoctorHealthUrl } from './signalk-url-resolver.js';
+import { resolveDoctorHealthUrl, resolveSignalkHealthUrl } from './signalk-url-resolver.js';
 import type { AvailableUpdates, UpdateInfo } from './types.js';
 
 const UPDATER_IMAGE = process.env.SELF_IMAGE ?? 'ghcr.io/dirkwa/signalk-updater-server';
@@ -28,6 +29,14 @@ async function doctorTarget(): Promise<VersionTarget> {
   };
 }
 
+async function signalkTarget(): Promise<VersionTarget> {
+  return {
+    container: 'signalk-server',
+    quadletName: 'signalk-server.container',
+    signalkUrl: await resolveSignalkHealthUrl(),
+  };
+}
+
 // 24h interval keeps GHCR API hits to ~2 per day. Even unauthenticated
 // pulls are well inside ghcr.io's per-IP budget (~50 req/h) at that rate.
 const DEFAULT_INTERVAL_MS = 24 * 60 * 60 * 1000;
@@ -36,6 +45,7 @@ const DEFAULT_INTERVAL_MS = 24 * 60 * 60 * 1000;
 // Module state is fine here — the updater process owns this; another
 // instance running in parallel would race on the Quadlet anyway.
 let cache: AvailableUpdates = {
+  signalkServer: { currentTag: 'unknown', updateAvailable: false },
   updater: { currentTag: 'unknown', updateAvailable: false },
   doctor: { currentTag: 'unknown', updateAvailable: false },
   lastCheckedAt: null,
@@ -56,9 +66,16 @@ async function checkOne(image: string, target: VersionTarget): Promise<UpdateInf
   // (the Quadlet's tag) so the field stays human-meaningful — but
   // updateAvailable stays false in that case because comparing a
   // floating tag like `:latest` against a semver is undefined.
-  const [identity, latest] = await Promise.all([
+  //
+  // `imageState` is the orthogonal image-level signal: computed WITH the
+  // GHCR round-trip (checkRemote: true) so it can report 'pull-available'
+  // for a moved rolling tag, which the semver compare above structurally
+  // cannot. Runs in parallel with the semver lookup; failures inside the
+  // drift resolver degrade to 'unknown', never throw here.
+  const [identity, latest, drift] = await Promise.all([
     getRuntimeIdentity(target),
     deriveLatestStable(image),
+    getImageDrift(target.container, target.quadletName, { checkRemote: true }),
   ]);
   const updateAvailable =
     identity.version !== null && latest !== null && compareSemver(latest, identity.version) > 0;
@@ -69,6 +86,24 @@ async function checkOne(image: string, target: VersionTarget): Promise<UpdateInf
     currentTag: identity.version ?? 'unknown',
     ...(latest !== null ? { availableTag: latest } : {}),
     updateAvailable,
+    imageState: drift.state,
+  };
+}
+
+// signalk-server has no GHCR semver release stream we track (it follows
+// upstream SignalK/signalk-server, not dirkwa's own publish cadence), so
+// its UpdateInfo is image-state-only: the rolling `:dirkwa` tag's digest
+// movement is the entire signal. No semver availableTag, no
+// semver-driven updateAvailable.
+async function checkSignalk(target: VersionTarget): Promise<UpdateInfo> {
+  const [identity, drift] = await Promise.all([
+    getRuntimeIdentity(target),
+    getImageDrift(target.container, target.quadletName, { checkRemote: true }),
+  ]);
+  return {
+    currentTag: identity.version ?? 'unknown',
+    updateAvailable: false,
+    imageState: drift.state,
   };
 }
 
@@ -104,13 +139,15 @@ export async function triggerCheck(log?: MinimalLogger): Promise<AvailableUpdate
   // returns null when the doctor is unreachable, malformed, or has
   // nothing to show yet). That keeps a slow / down doctor from blocking
   // the engine check that drives the badge for the engines themselves.
-  const doctorT = await doctorTarget();
-  const [updater, doctor, drift] = await Promise.all([
+  const [doctorT, signalkT] = await Promise.all([doctorTarget(), signalkTarget()]);
+  const [signalkServer, updater, doctor, drift] = await Promise.all([
+    checkSignalk(signalkT),
     checkOne(UPDATER_IMAGE, UPDATER_TARGET),
     checkOne(DOCTOR_IMAGE, doctorT),
     fetchDriftReport(),
   ]);
   cache = {
+    signalkServer,
     updater,
     doctor,
     ...(drift !== null ? { signalkDeps: drift } : {}),
@@ -119,8 +156,17 @@ export async function triggerCheck(log?: MinimalLogger): Promise<AvailableUpdate
   if (log) {
     log.info(
       {
-        updater: { current: updater.currentTag, latest: updater.availableTag },
-        doctor: { current: doctor.currentTag, latest: doctor.availableTag },
+        signalkServer: { current: signalkServer.currentTag, imageState: signalkServer.imageState },
+        updater: {
+          current: updater.currentTag,
+          latest: updater.availableTag,
+          imageState: updater.imageState,
+        },
+        doctor: {
+          current: doctor.currentTag,
+          latest: doctor.availableTag,
+          imageState: doctor.imageState,
+        },
         drift: drift
           ? {
               imageTag: drift.signalkImageTag,
@@ -156,6 +202,7 @@ export function getCachedUpdates(): AvailableUpdates {
  */
 export function invalidate(log?: MinimalLogger): void {
   cache = {
+    signalkServer: { currentTag: 'unknown', updateAvailable: false },
     updater: { currentTag: 'unknown', updateAvailable: false },
     doctor: { currentTag: 'unknown', updateAvailable: false },
     lastCheckedAt: null,

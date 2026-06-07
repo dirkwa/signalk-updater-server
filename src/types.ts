@@ -23,6 +23,28 @@ export interface AnnotatedTag extends Tag {
   isLocal: boolean;
 }
 
+/** Image-level freshness of a movable-tag container, independent of the
+ *  semver in package.json. For a rolling tag like `:dirkwa` the semver
+ *  never moves between builds, so the only way to know you're behind is
+ *  to compare image identities of the same tag:
+ *    - 'in-sync'          running == local tag == remote tag
+ *    - 'restart-required' a newer image is pulled but the container still
+ *                         runs the old one (needs restart, no pull)
+ *    - 'pull-available'   the tag moved on GHCR; the new image isn't
+ *                         pulled yet
+ *    - 'pull-and-restart' both of the above
+ *    - 'unknown'          couldn't determine (digest-pinned Quadlet,
+ *                         offline, runtime without the needed fields)
+ *  Computed by src/image-drift.ts. See that module for the comparison
+ *  rules (image-id equality for the local check, digest-set membership
+ *  for the remote check, dangling-image handling). */
+export type ImageState =
+  | 'in-sync'
+  | 'restart-required'
+  | 'pull-available'
+  | 'pull-and-restart'
+  | 'unknown';
+
 export interface ContainerSnapshot {
   /** OperatorIntent: the tag suffix from the Quadlet's `Image=` line
    *  (`latest`, `dirkwa`, `0.6.3`, etc.). NOT a reliable indicator of
@@ -32,6 +54,12 @@ export interface ContainerSnapshot {
   /** Image digest from dockerode (no longer surfaced in the UI; kept on
    *  the wire for backward compat with older webapps). */
   digest: string;
+  /** Image-level freshness for movable-tag installs. Distinct from
+   *  `version` (semver) and `updateAvailable` (semver comparison): catches
+   *  "newer image pulled, not restarted" and "tag moved on GHCR, not
+   *  pulled" — the cases a same-semver rolling tag hides. Optional on the
+   *  wire so older webapps ignore it; absent is treated as 'unknown'. */
+  imageState?: ImageState;
   /** RuntimeIdentity: the running engine's package.json version, when
    *  knowable. Resolved via `getRuntimeIdentity` (HTTP health probe →
    *  OCI image label → Quadlet tag if semver). Null when no source
@@ -108,6 +136,12 @@ export interface UpdateInfo {
   currentTag: string;
   availableTag?: string;
   updateAvailable: boolean;
+  /** Image-level freshness, computed WITH the GHCR round-trip (so it can
+   *  report 'pull-available' as well as 'restart-required'). Distinct from
+   *  the semver `updateAvailable` above: this is what catches a rolling
+   *  tag like `:dirkwa` moving when the semver behind it doesn't. Optional
+   *  so older webapps ignore it; absent is treated as 'unknown'. */
+  imageState?: ImageState;
 }
 
 /** GET /api/updates/available — daily-refreshed snapshot of both peer
@@ -115,6 +149,12 @@ export interface UpdateInfo {
  *  dependency-drift report. Powered by a server-side setInterval so the
  *  badge stays accurate even when no client is open. */
 export interface AvailableUpdates {
+  /** signalk-server's freshness. Image-state-only (no semver release
+   *  stream is tracked for it): `imageState` carries whether the rolling
+   *  `:dirkwa` tag has moved on GHCR ('pull-available') or a pulled image
+   *  awaits a restart ('restart-required'). `updateAvailable` is always
+   *  false here — the meaningful signal is `imageState`. */
+  signalkServer: UpdateInfo;
   updater: UpdateInfo;
   doctor: UpdateInfo;
   /** Drift report fetched from signalk-doctor-server's GET /api/drift.

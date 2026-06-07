@@ -274,6 +274,50 @@ async function fetchTagsConcurrent(image: string, names: string[], token: string
   return results.filter((t): t is Tag => t !== null);
 }
 
+/**
+ * Resolve the manifest digest a tag currently points to on GHCR — the
+ * `docker-content-digest` header the registry returns for the tag's
+ * manifest. This is the "LatestAvailable digest" for a movable tag like
+ * `:dirkwa`: when the rolling build re-points the tag, this value changes
+ * even though the tag string and the package.json semver behind it stay
+ * the same. That digest move is the ONLY signal that a floating-tag
+ * install has a newer image waiting — semver comparison can't see it.
+ *
+ * `image` is the repo path without the `ghcr.io/` prefix
+ * (e.g. `dirkwa/signalk-server`). Returns null on any failure (no token,
+ * deleted tag, network down) — callers treat null as "couldn't determine,
+ * don't claim drift", matching every other GHCR helper here.
+ *
+ * Deliberately bypasses the listTags cache: this is a single cheap HEAD-
+ * equivalent (one GET, no blob descent) and its callers are the explicit
+ * refresh paths (24h tick, manual check) that want live data.
+ */
+export async function headManifestDigest(image: string, tag: string): Promise<string | null> {
+  try {
+    const token = await getAnonToken(image);
+    if (!token) return null;
+    const res = await fetch(`https://ghcr.io/v2/${image}/manifests/${encodeURIComponent(tag)}`, {
+      // HEAD returns the digest header without the body. Some registry
+      // CDNs are flaky on HEAD for manifests, so fall back to GET on a
+      // non-OK HEAD before giving up.
+      method: 'HEAD',
+      headers: { authorization: `Bearer ${token}`, accept: MANIFEST_ACCEPT },
+    });
+    let digest = res.ok ? res.headers.get('docker-content-digest') : null;
+    if (!digest) {
+      const getRes = await fetch(
+        `https://ghcr.io/v2/${image}/manifests/${encodeURIComponent(tag)}`,
+        { headers: { authorization: `Bearer ${token}`, accept: MANIFEST_ACCEPT } },
+      );
+      if (!getRes.ok) return null;
+      digest = getRes.headers.get('docker-content-digest');
+    }
+    return digest && digest.length > 0 ? digest : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Bust the listTags cache for one image (or all, if no arg). Called from
  *  update-checker.triggerCheck so the manual "Check now" button and the
  *  scheduled tick see fresh GHCR data — without this, the 6h listTags

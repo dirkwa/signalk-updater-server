@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readQuadletImageTag } from '../src/quadlet-image-tag.js';
+import { readQuadletImageRef, readQuadletImageTag } from '../src/quadlet-image-tag.js';
 
 let dir: string;
 const originalQuadletDir = process.env.QUADLET_DIR;
@@ -77,5 +77,76 @@ describe('readQuadletImageTag', () => {
       `[Container]\nImage=ghcr.io/dirkwa/signalk-server:0.6.2\n# Image=ghcr.io/dirkwa/signalk-server:0.5.0\n`,
     );
     expect(await readQuadletImageTag('foo.container')).toBe('0.6.2');
+  });
+});
+
+describe('readQuadletImageRef', () => {
+  it('returns the full registry/repo:tag ref for a floating tag', async () => {
+    await writeFile(
+      join(dir, 'foo.container'),
+      `[Container]\nImage=ghcr.io/dirkwa/signalk-server:dirkwa\n`,
+    );
+    expect(await readQuadletImageRef('foo.container')).toBe('ghcr.io/dirkwa/signalk-server:dirkwa');
+  });
+
+  it('returns the full ref for a pinned semver', async () => {
+    await writeFile(
+      join(dir, 'foo.container'),
+      `[Container]\nImage=ghcr.io/dirkwa/signalk-server:0.6.2\n`,
+    );
+    expect(await readQuadletImageRef('foo.container')).toBe('ghcr.io/dirkwa/signalk-server:0.6.2');
+  });
+
+  it('strips an @sha256 digest pin but keeps the tagged ref', async () => {
+    await writeFile(
+      join(dir, 'foo.container'),
+      `[Container]\nImage=ghcr.io/dirkwa/signalk-server:dirkwa@sha256:abcdef0123456789\n`,
+    );
+    expect(await readQuadletImageRef('foo.container')).toBe('ghcr.io/dirkwa/signalk-server:dirkwa');
+  });
+
+  it('returns null for a bare repo with no tag', async () => {
+    await writeFile(
+      join(dir, 'foo.container'),
+      `[Container]\nImage=ghcr.io/dirkwa/signalk-server\n`,
+    );
+    expect(await readQuadletImageRef('foo.container')).toBeNull();
+  });
+
+  it('returns null when only a digest is pinned (no tag)', async () => {
+    await writeFile(
+      join(dir, 'foo.container'),
+      `[Container]\nImage=ghcr.io/dirkwa/signalk-server@sha256:abcdef0123456789\n`,
+    );
+    expect(await readQuadletImageRef('foo.container')).toBeNull();
+  });
+
+  it('does not mistake a registry-port colon for a tag', async () => {
+    // `ghcr.io:443/dirkwa/signalk-server` — the colon precedes the last
+    // slash, so there is no tag. Must be null, not "443/dirkwa/...".
+    await writeFile(
+      join(dir, 'foo.container'),
+      `[Container]\nImage=ghcr.io:443/dirkwa/signalk-server\n`,
+    );
+    expect(await readQuadletImageRef('foo.container')).toBeNull();
+  });
+
+  it('keeps the registry port AND the tag when both are present', async () => {
+    await writeFile(
+      join(dir, 'foo.container'),
+      `[Container]\nImage=ghcr.io:443/dirkwa/signalk-server:dirkwa\n`,
+    );
+    expect(await readQuadletImageRef('foo.container')).toBe(
+      'ghcr.io:443/dirkwa/signalk-server:dirkwa',
+    );
+  });
+
+  it('returns null when the file is missing', async () => {
+    expect(await readQuadletImageRef('does-not-exist.container')).toBeNull();
+  });
+
+  it('returns null when there is no Image= line', async () => {
+    await writeFile(join(dir, 'foo.container'), `[Container]\nContainerName=foo\n`);
+    expect(await readQuadletImageRef('foo.container')).toBeNull();
   });
 });

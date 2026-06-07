@@ -59,3 +59,41 @@ export async function readQuadletImageTag(quadletName: string): Promise<string> 
   }
   return 'unknown';
 }
+
+/**
+ * Read the full `Image=` reference from a Quadlet — registry, repository,
+ * and tag (e.g. `ghcr.io/dirkwa/signalk-server:dirkwa`). Unlike
+ * {@link readQuadletImageTag}, which strips everything but the tag suffix,
+ * this returns the whole ref so callers can inspect the local image the
+ * ref resolves to and query the remote registry for the tag's current
+ * digest. An `@sha256:...` digest pin is stripped — the drift check only
+ * makes sense against a movable tag, and a digest-pinned Quadlet can never
+ * drift by definition.
+ *
+ * Returns `null` when the file can't be read, no `Image=` line exists, or
+ * the ref has no tag (a bare `repo` with no `:tag`, or a digest-only pin).
+ */
+export async function readQuadletImageRef(quadletName: string): Promise<string | null> {
+  let body: string;
+  try {
+    body = await readFile(join(quadletDir(), quadletName), 'utf8');
+  } catch {
+    return null;
+  }
+  for (const line of body.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('Image=')) continue;
+    const value = trimmed.slice('Image='.length).trim();
+    const withoutDigest = value.split('@')[0] ?? value;
+    // Reject refs with no tag. The colon must come after the last slash —
+    // `ghcr.io:443/repo` has a registry-port colon but no tag, and a bare
+    // `ghcr.io/dirkwa/signalk-server` has no colon at all.
+    const lastSlash = withoutDigest.lastIndexOf('/');
+    const colon = withoutDigest.lastIndexOf(':');
+    if (colon === -1 || colon < lastSlash) return null;
+    const tag = withoutDigest.slice(colon + 1);
+    if (DIGEST_LIKE.test(tag) || tag === '') return null;
+    return withoutDigest;
+  }
+  return null;
+}

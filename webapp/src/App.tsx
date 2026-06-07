@@ -8,7 +8,7 @@ import { loadSession } from './session';
 import { useApi } from './hooks/useApi';
 import { useThemeSync } from './hooks/useThemeSync';
 import { useToast } from './toast';
-import type { AvailableUpdates, HealthResponse } from './types';
+import type { AvailableUpdates, HealthResponse, ImageState } from './types';
 
 type Route = 'dashboard' | 'versions' | 'logs';
 
@@ -75,9 +75,21 @@ export function App() {
   const driftingDeps =
     updates.data?.signalkDeps?.packages.filter((p) => p.classification !== 'up-to-date').length ??
     0;
+  // An engine earns the badge when its image has drifted (rolling tag
+  // moved on GHCR, or a pulled image awaits a restart) — the
+  // same-semver-rolling-tag case the semver `updateAvailable` can't see.
+  const imageStateNeedsAttention = (info?: { imageState?: ImageState }): boolean =>
+    info?.imageState === 'restart-required' ||
+    info?.imageState === 'pull-available' ||
+    info?.imageState === 'pull-and-restart';
+  const driftingImages =
+    (imageStateNeedsAttention(updates.data?.signalkServer) ? 1 : 0) +
+    (imageStateNeedsAttention(updates.data?.updater) ? 1 : 0) +
+    (imageStateNeedsAttention(updates.data?.doctor) ? 1 : 0);
   const pendingUpdates =
     (updates.data?.updater.updateAvailable ? 1 : 0) +
     (updates.data?.doctor.updateAvailable ? 1 : 0) +
+    driftingImages +
     driftingDeps;
 
   return (
