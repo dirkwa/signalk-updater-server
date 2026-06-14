@@ -5,15 +5,26 @@ import { requireToken } from '../auth.js';
 import { performDoctorSwitch } from '../doctor-switch-service.js';
 import { MutexBusyError } from '../mutex.js';
 import { getRuntimeIdentity, type VersionTarget } from '../runtime-version.js';
+import { resolveDoctorHealthUrl } from '../signalk-url-resolver.js';
 import type { DoctorState } from '../types.js';
 
 const DOCTOR_IMAGE = process.env.DOCTOR_IMAGE ?? 'ghcr.io/dirkwa/signalk-doctor-server';
 
-const DOCTOR_TARGET: VersionTarget = {
-  container: 'signalk-doctor-server',
-  quadletName: 'signalk-doctor-server.container',
-  healthUrl: process.env.DOCTOR_HEALTH_URL ?? 'http://127.0.0.1:3004/api/health',
-};
+// Build the doctor's RuntimeIdentity target through the shared resolver,
+// NOT a hardcoded `127.0.0.1:3004` fallback. Inside the pasta-networked
+// updater, `127.0.0.1` is our OWN loopback, so a hardcoded fallback
+// probes the updater instead of the doctor; the health tier then fails
+// and getRuntimeIdentity drops to the flakier OCI-label / Quadlet-tag
+// tiers, whose per-request answer makes `updateAvailable` flicker between
+// reloads. state.ts and update-checker.ts already resolve this way — this
+// is the 4th doctor call site and must match (single-resolver invariant).
+async function doctorTarget(): Promise<VersionTarget> {
+  return {
+    container: 'signalk-doctor-server',
+    quadletName: 'signalk-doctor-server.container',
+    healthUrl: await resolveDoctorHealthUrl(),
+  };
+}
 
 async function deriveLatest(): Promise<string | null> {
   const r = await listTags(DOCTOR_IMAGE.replace(/^ghcr\.io\//, ''));
@@ -24,7 +35,7 @@ async function deriveLatest(): Promise<string | null> {
 export async function registerDoctorRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/doctor/state', async (): Promise<DoctorState> => {
     const [identity, latest] = await Promise.all([
-      getRuntimeIdentity(DOCTOR_TARGET),
+      doctorTarget().then(getRuntimeIdentity),
       deriveLatest(),
     ]);
     // Both sides are clean semvers (or null) now that currentTag comes

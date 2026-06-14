@@ -66,6 +66,21 @@ export interface CurrentState {
   lastCheck: string;
 }
 
+// Mirror of src/types.ts LockInfo / LockStatus — the GET /api/lock wire
+// shape. Drives the stale-lock alert + Clear control on the Dashboard.
+export interface LockInfo {
+  owner: 'updater' | 'doctor';
+  operation: 'switch' | 'rollback' | 'self-update' | 'doctor-switch' | 'hardware-apply' | 'recover';
+  startedAt: string;
+  pid?: number;
+}
+
+export interface LockStatus {
+  lock: LockInfo | null;
+  ageMs: number | null;
+  stale: boolean;
+}
+
 export type RuntimeKind = 'podman' | 'docker' | 'unknown';
 
 export interface HealthResponse {
@@ -196,8 +211,13 @@ export type SwitchStage =
   | 'complete'
   | 'failed';
 
+// Mirror of src/types.ts SwitchTarget. Absent on the wire means
+// 'signalk-server' (pre-discriminator events).
+export type SwitchTarget = 'signalk-server' | 'doctor';
+
 export interface SwitchProgressEvent {
   stage: SwitchStage;
+  target?: SwitchTarget;
   message?: string;
   to?: string;
   from?: string;

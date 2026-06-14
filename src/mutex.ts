@@ -1,20 +1,13 @@
 import { open, rename, unlink } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
+import type { LockInfo } from './types.js';
 
-export type Operation =
-  | 'switch'
-  | 'rollback'
-  | 'self-update'
-  | 'doctor-switch'
-  | 'hardware-apply'
-  | 'recover';
+export type { LockInfo };
 
-export interface LockInfo {
-  owner: 'updater' | 'doctor';
-  operation: Operation;
-  startedAt: string;
-  pid?: number;
-}
+// The operations that take the lock. Kept here (mutex's concern), and
+// must stay in sync with LockInfo.operation's union in types.ts (the wire
+// shape mirrored by the webapp).
+export type Operation = LockInfo['operation'];
 
 const DATA_DIR = process.env.DATA_DIR ?? '/data';
 const LOCK_PATH = process.env.OPERATION_LOCK ?? join(DATA_DIR, 'operation.lock');
@@ -58,7 +51,22 @@ export class MutexBusyError extends Error {
   }
 }
 
-async function tryAcquire(info: LockInfo): Promise<boolean> {
+// A lock older than this is treated as stale and reclaimable. It must be
+// comfortably longer than the slowest legitimate operation — a switch can
+// take a full image pull plus the 180s health-poll — but short enough
+// that a process SIGKILLed mid-operation (OOM, host reboot) doesn't wedge
+// every future switch/update forever. There is no liveness handshake to
+// renew the lock, so this is a pure age cutoff. 10 min clears comfortably
+// after the worst real case (~4 min) without leaving a crashed box stuck
+// for an operator-noticeable stretch.
+export const STALE_LOCK_MS = 10 * 60 * 1000;
+
+function lockAgeMs(lock: LockInfo): number | null {
+  const t = Date.parse(lock.startedAt);
+  return Number.isNaN(t) ? null : Date.now() - t;
+}
+
+async function writeLockFile(info: LockInfo): Promise<boolean> {
   try {
     const fh = await open(LOCK_PATH, 'wx', 0o600);
     try {
@@ -74,6 +82,50 @@ async function tryAcquire(info: LockInfo): Promise<boolean> {
     if (code === 'EEXIST') return false;
     throw err;
   }
+}
+
+let stealSeq = 0;
+
+/**
+ * Atomically claim a stale lock by RENAMING it out of the way, not
+ * unlink+recreate. `rename(LOCK_PATH, …)` of the same source path is
+ * atomic: when two processes both try to steal the same stale lock, only
+ * one rename of LOCK_PATH succeeds — the others get ENOENT because the
+ * file is already gone. So exactly one process "wins" the steal and then
+ * creates the fresh lock with `wx`. unlink+recreate is NOT race-free here:
+ * two reclaimers can both unlink (idempotent) and both `wx`-create in the
+ * gap, double-acquiring. Returns true only for the single winner.
+ */
+async function stealStaleLock(info: LockInfo): Promise<boolean> {
+  stealSeq += 1;
+  const claimPath = `${LOCK_PATH}.steal.${process.pid}.${stealSeq}`;
+  try {
+    await rename(LOCK_PATH, claimPath);
+  } catch {
+    // Lost the rename race (someone else stole/released it first), or the
+    // file vanished. Either way we did not win — fall through to a plain
+    // create attempt in case it's now free.
+    return writeLockFile(info);
+  }
+  // We won the steal. Drop the carcass and install our lock.
+  await unlink(claimPath).catch(() => undefined);
+  return writeLockFile(info);
+}
+
+async function tryAcquire(info: LockInfo): Promise<boolean> {
+  if (await writeLockFile(info)) return true;
+  // Lock file exists. Reclaim it only if it's stale — a crashed operation
+  // that never ran its release `finally`. A fresh lock is a real in-flight
+  // operation and we must not steal it.
+  const existing = await readLock();
+  if (existing) {
+    const age = lockAgeMs(existing);
+    if (age === null || age <= STALE_LOCK_MS) return false;
+    return stealStaleLock(info);
+  }
+  // The lock vanished between our write and our read (the holder released).
+  // Try once more.
+  return writeLockFile(info);
 }
 
 export async function withMutex<T>(operation: Operation, fn: () => Promise<T>): Promise<T> {
