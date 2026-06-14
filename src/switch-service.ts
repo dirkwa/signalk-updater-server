@@ -180,16 +180,22 @@ async function doSwitch(input: SwitchInput): Promise<SwitchResult> {
   });
   const timeoutMs = input.healthTimeoutMs ?? DEFAULT_HEALTH_TIMEOUT_MS;
   const healthUrl = await resolveSignalkHealthUrl();
-  const healthy = await pollHealth(healthUrl, timeoutMs, (p) => {
-    // Re-emit on each attempt so the UI shows progress instead of going
-    // silent for the (potentially) 3 minutes the wait can take. Same
-    // `stage: health-poll`; only the message changes.
-    publishSwitchEvent({
-      stage: 'health-poll',
-      to: input.tag,
-      from: previousImage,
-      message: `Polling /signalk… ${Math.round(p.elapsedMs / 1000)}s of ${Math.round(p.timeoutMs / 1000)}s (attempt ${p.attempt})`,
-    });
+  const healthy = await pollHealth(healthUrl, timeoutMs, {
+    // signalk-server's SSL plugin redirects :80/signalk to a self-signed
+    // https endpoint; accept it on this local liveness probe (see
+    // pollHealth's PollHealthOptions doc).
+    allowSelfSigned: true,
+    onProgress: (p) => {
+      // Re-emit on each attempt so the UI shows progress instead of going
+      // silent for the (potentially) 3 minutes the wait can take. Same
+      // `stage: health-poll`; only the message changes.
+      publishSwitchEvent({
+        stage: 'health-poll',
+        to: input.tag,
+        from: previousImage,
+        message: `Polling /signalk… ${Math.round(p.elapsedMs / 1000)}s of ${Math.round(p.timeoutMs / 1000)}s (attempt ${p.attempt})`,
+      });
+    },
   });
   if (!healthy) {
     publishSwitchEvent({
