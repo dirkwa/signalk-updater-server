@@ -77,7 +77,9 @@ export async function registerHardwareRoutes(app: FastifyInstance): Promise<void
           }
 
           const healthUrl = await resolveSignalkHealthUrl();
-          const healthy = await pollHealth(healthUrl, 120000);
+          // signalk-server SSL plugin redirects :80 → self-signed :443;
+          // accept it on this local liveness probe (see pollHealth doc).
+          const healthy = await pollHealth(healthUrl, 120000, { allowSelfSigned: true });
           return {
             ok: healthy,
             hardware: next,

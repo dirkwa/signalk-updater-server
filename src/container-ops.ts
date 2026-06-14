@@ -1,4 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises';
+import { request as httpRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
 import { resolveRuntime, safe } from './podman/client.js';
 
 /**
@@ -78,12 +80,15 @@ export async function trialRun(
 }
 
 /**
- * Default health-poll timeout for switch flows. Matches `TimeoutStartSec=180`
- * in the engine Quadlets — systemd is willing to wait that long for the new
- * container to come up; the switch flow should be willing to wait at least
- * as long before declaring failure and rolling back. The previous default
- * of 60s was tuned to clean dev installs and was regularly tripped by real
- * boats where signalk-server has 30+ plugins to load on cold start.
+ * Default health-poll timeout for switch flows. This bounds how long we
+ * wait for the new container's HTTP health endpoint to answer 2xx —
+ * i.e. the *application* to be serving, which for signalk-server is well
+ * after the container process has started (30+ plugins to load on a cold
+ * boat install). It is deliberately generous and is NOT the same thing as
+ * the Quadlet's `TimeoutStartSec` (that bounds container *start*, a much
+ * earlier event). 180s comfortably covers a healthy cold start; a probe
+ * that's still failing at the deadline means the image is genuinely
+ * unhealthy, not slow.
  */
 export const DEFAULT_HEALTH_TIMEOUT_MS = 180_000;
 
@@ -93,44 +98,124 @@ export interface PollHealthProgress {
   attempt: number;
 }
 
+export interface PollHealthOptions {
+  onProgress?: (p: PollHealthProgress) => void;
+  /**
+   * Accept a self-signed / otherwise-unverifiable TLS cert on the health
+   * probe. signalk-server's SSL plugin makes `:80/signalk` redirect to a
+   * self-signed `https://…:443/signalk`; a verifying client throws
+   * `SELF_SIGNED_CERT_IN_CHAIN` on every attempt and the poll times out
+   * even though the server is perfectly healthy (reproduced 2026-06-15).
+   * This is a liveness probe to a known-local sibling container over a
+   * link-local address, not a security boundary — cert verification adds
+   * nothing here, so signalk-server callers opt in. The doctor's probe is
+   * plain http and leaves this off.
+   */
+  allowSelfSigned?: boolean;
+}
+
+interface ProbeResult {
+  ok: boolean;
+  /** Location header on a 3xx, so the caller can follow one redirect
+   *  (the SSL plugin's :80 → :443 hop) without a redirect-following
+   *  fetch that would re-verify the cert. */
+  redirect?: string;
+}
+
+/**
+ * Single HTTP(S) GET that resolves to whether the response was 2xx, using
+ * `node:http` / `node:https` directly rather than `fetch`. The raw client
+ * is what lets us set `rejectUnauthorized: false` for the self-signed
+ * case (the global `fetch` has no per-call TLS knob without pulling in
+ * undici, which isn't in the production `--omit=dev` image). Bounded by
+ * `timeoutMs`; any error (connect refused, TLS, timeout) resolves to
+ * `{ ok: false }` so the caller just retries.
+ */
+function probeOnce(url: string, timeoutMs: number, allowSelfSigned: boolean): Promise<ProbeResult> {
+  return new Promise((resolve) => {
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      resolve({ ok: false });
+      return;
+    }
+    const isHttps = parsed.protocol === 'https:';
+    const request = isHttps ? httpsRequest : httpRequest;
+    const req = request(
+      url,
+      {
+        method: 'GET',
+        timeout: timeoutMs,
+        // Only meaningful on https; harmless on http.
+        ...(isHttps && allowSelfSigned ? { rejectUnauthorized: false } : {}),
+      },
+      (res) => {
+        const status = res.statusCode ?? 0;
+        const location = res.headers.location;
+        // Drain so the socket frees promptly; we don't need the body.
+        res.resume();
+        if (status >= 300 && status < 400 && location) {
+          // Resolve the Location against the request URL. This runs in the
+          // response callback, not the Promise executor, so a malformed
+          // header here would throw as an uncaught exception and crash the
+          // process — guard it and treat a bad redirect as a non-redirecting
+          // failure (the caller just retries / gives up at the deadline).
+          let redirect: string | undefined;
+          try {
+            redirect = new URL(location, url).toString();
+          } catch {
+            redirect = undefined;
+          }
+          resolve({ ok: false, redirect });
+          return;
+        }
+        resolve({ ok: status >= 200 && status < 300 });
+      },
+    );
+    req.on('timeout', () => req.destroy());
+    req.on('error', () => resolve({ ok: false }));
+    req.end();
+  });
+}
+
 /**
  * Poll a health endpoint until it returns 2xx or the deadline expires.
  * Used by switch flows to confirm the new image actually came up healthy
  * before declaring success.
  *
- * `onProgress` (optional) is called once before each attempt with the
- * elapsed time, configured timeout, and attempt number — switch flows
- * use this to publish stage events to the UI so the user sees the poll
- * is alive instead of a silent ~minute that looks hung.
+ * Follows a single redirect per attempt so signalk-server's SSL-plugin
+ * `:80 → :443` hop is transparent. `onProgress` (optional) is called once
+ * before each attempt with the elapsed time, configured timeout, and
+ * attempt number — switch flows use this to publish stage events to the
+ * UI so the user sees the poll is alive instead of a silent stretch that
+ * looks hung.
  */
 export async function pollHealth(
   url: string,
   timeoutMs: number,
-  onProgress?: (p: PollHealthProgress) => void,
+  options: PollHealthOptions = {},
 ): Promise<boolean> {
+  const { onProgress, allowSelfSigned = false } = options;
   const start = Date.now();
   const deadline = start + timeoutMs;
   let attempt = 0;
   while (Date.now() < deadline) {
     attempt += 1;
     onProgress?.({ elapsedMs: Date.now() - start, timeoutMs, attempt });
-    // Bound each fetch by the time remaining on the global deadline so
-    // one stalled request can't blow past timeoutMs. Minimum 50ms guards
-    // against AbortController firing before fetch() even starts when
-    // we're already at the deadline edge.
-    const fetchTimeout = Math.max(50, deadline - Date.now());
-    const controller = new AbortController();
-    const abortTimer = setTimeout(() => controller.abort(), fetchTimeout);
-    try {
-      const res = await fetch(url, { signal: controller.signal });
-      if (res.ok) return true;
-    } catch {
-      // ignore; retry (includes AbortError from the per-fetch timeout)
-    } finally {
-      clearTimeout(abortTimer);
+    // Bound each probe by the time remaining on the global deadline so one
+    // stalled request can't blow past timeoutMs. Minimum 50ms guards the
+    // deadline edge.
+    const perAttempt = Math.max(50, deadline - Date.now());
+    let r = await probeOnce(url, perAttempt, allowSelfSigned);
+    // Follow exactly one redirect (the SSL plugin's :80 → :443). Bound the
+    // second leg by whatever time is left, never below the 50ms floor.
+    if (!r.ok && r.redirect) {
+      const left = Math.max(50, deadline - Date.now());
+      r = await probeOnce(r.redirect, left, allowSelfSigned);
     }
-    // Same deadline-respecting clamp on the inter-attempt sleep — if
-    // the deadline is <2s away, don't sleep past it.
+    if (r.ok) return true;
+    // Deadline-respecting clamp on the inter-attempt sleep.
     const remaining = deadline - Date.now();
     if (remaining <= 0) break;
     await delay(Math.min(2000, remaining));
