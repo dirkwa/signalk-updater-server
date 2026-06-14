@@ -18,10 +18,13 @@ import { useApi } from '../hooks/useApi';
 import { useToast } from '../toast';
 import { useConfirm } from '../confirm';
 import { fmtTime, relTime } from '../time';
+import { mergeImageState } from '../image-state';
 import type {
   AnnotatedTag,
+  AvailableUpdates,
   Channel,
   CurrentState,
+  ImageState,
   SwitchProgressEvent,
   SwitchResult,
   VersionSettings,
@@ -83,6 +86,18 @@ function shortDigest(digest: string): string {
   return hex.slice(0, 12);
 }
 
+/** The in-use row's image is stale (registry moved and/or a pulled image
+ *  isn't running yet) — i.e. there's an actionable update for the tag the
+ *  operator already tracks. `in-sync` / `unknown` are not drift: keep the
+ *  inert "In use" rendering for those. */
+function isDrift(imageState: ImageState): boolean {
+  return (
+    imageState === 'pull-available' ||
+    imageState === 'pull-and-restart' ||
+    imageState === 'restart-required'
+  );
+}
+
 function isChannelVisible(channel: Channel, settings: VersionSettings | null): boolean {
   if (channel === 'stable' || channel === 'dirkwa') return true;
   if (channel === 'beta') return settings?.showBeta ?? false;
@@ -99,6 +114,15 @@ export function Versions() {
     intervalMs: 5000,
   });
   const settings = useApi<VersionSettings>((signal) => api('/api/versions/settings', { signal }));
+  // Image-level freshness for signalk-server's movable tag (`:dirkwa`,
+  // `:master`, `:latest`). For these tags the semver never moves between
+  // builds, so a digest-derived imageState is the only honest "is the
+  // in-use tag actually current" signal — the in-use row uses it to offer
+  // "Update & restart" instead of an inert "In use". Same source the
+  // Dashboard banner reads.
+  const updates = useApi<AvailableUpdates>((signal) => api('/api/updates/available', { signal }), {
+    intervalMs: 5 * 60 * 1000,
+  });
 
   const [progress, setProgress] = useState<SwitchProgressEvent | null>(null);
   const [pullingTag, setPullingTag] = useState<string | null>(null);
@@ -112,6 +136,8 @@ export function Versions() {
   versionsRef.current = versions;
   const stateRef = useRef(state);
   stateRef.current = state;
+  const updatesRef = useRef(updates);
+  updatesRef.current = updates;
 
   // Open one persistent SSE channel so the progress card reflects any
   // in-flight switch, even one another browser kicked off. The broker
@@ -126,9 +152,13 @@ export function Versions() {
         setProgress(parsed);
         if (parsed.stage === 'complete' || parsed.stage === 'failed') {
           // Refresh the version list + state so the "in use" badge and
-          // isLocal flags catch up.
+          // isLocal flags catch up. Also refresh the updates cache so the
+          // in-use row's drift action clears once the new digest is
+          // running (the in-memory cache is busted server-side on a
+          // successful switch, but the webapp still needs to re-read it).
           void versionsRef.current.refresh();
           void stateRef.current.refresh();
+          void updatesRef.current.refresh();
         }
       } catch {
         // ignore malformed events; heartbeats arrive as `: heartbeat` and
@@ -230,6 +260,15 @@ export function Versions() {
   );
 
   const currentTag = state.data?.signalkServer.tag ?? null;
+  // Digest-level freshness of the in-use tag. Merges the instant,
+  // network-free signal from /api/state with the GHCR-cadence signal from
+  // /api/updates/available (the only one that ever reports
+  // 'pull-available'). Drives the in-use row's "Update & restart" /
+  // "Restart to apply" action for movable tags.
+  const currentImageState: ImageState = mergeImageState(
+    state.data?.signalkServer.imageState,
+    updates.data?.signalkServer.imageState,
+  );
   const switchInFlight = progress !== null && ACTIVE_STAGES.has(progress.stage);
 
   return (
@@ -288,6 +327,7 @@ export function Versions() {
                 channel={channel}
                 tags={tags}
                 currentTag={currentTag}
+                currentImageState={currentImageState}
                 pullingTag={pullingTag}
                 switchInFlight={switchInFlight}
                 onPull={doPull}
@@ -368,6 +408,7 @@ interface ChannelCardProps {
   channel: Channel;
   tags: AnnotatedTag[];
   currentTag: string | null;
+  currentImageState: ImageState;
   pullingTag: string | null;
   switchInFlight: boolean;
   onPull: (tag: string) => void;
@@ -378,6 +419,7 @@ function ChannelCard({
   channel,
   tags,
   currentTag,
+  currentImageState,
   pullingTag,
   switchInFlight,
   onPull,
@@ -419,6 +461,13 @@ function ChannelCard({
                   <td>
                     <span className="me-2">{t.name}</span>
                     {isCurrent ? <Badge color="primary">current</Badge> : null}
+                    {isCurrent && isDrift(currentImageState) ? (
+                      <div className="text-warning small mt-1">
+                        {currentImageState === 'restart-required'
+                          ? 'Newer image pulled — restart to apply'
+                          : 'Newer image on registry for this tag'}
+                      </div>
+                    ) : null}
                   </td>
                   <td className="d-none d-md-table-cell text-muted small">
                     {t.pushedAt ? fmtTime(t.pushedAt) : '—'}
@@ -437,7 +486,12 @@ function ChannelCard({
                   </td>
                   <td className="text-end">
                     {isCurrent ? (
-                      <span className="text-muted small">In use</span>
+                      <CurrentRowAction
+                        tag={t.name}
+                        imageState={currentImageState}
+                        switchInFlight={switchInFlight}
+                        onSwitch={onSwitch}
+                      />
                     ) : isLocal ? (
                       <Button
                         size="sm"
@@ -480,5 +534,40 @@ function ChannelCard({
         </Table>
       </CardBody>
     </Card>
+  );
+}
+
+/** Action cell for the in-use tag row. When the in-use image is current
+ *  this is the inert "In use" text. When the registry has moved the
+ *  movable tag (or a pulled image hasn't been started yet) it becomes an
+ *  actionable button that runs the full switch flow against the SAME tag:
+ *  re-pull the moved digest → trial → rewrite Quadlet → restart →
+ *  health-poll → rollback on failure. Switching to the same tag name is a
+ *  Quadlet no-op but a real image upgrade — this is the only way to "pull
+ *  & run the latest" for `:dirkwa` / `:master` / `:latest`, where the
+ *  semver never moves between builds. */
+function CurrentRowAction({
+  tag,
+  imageState,
+  switchInFlight,
+  onSwitch,
+}: {
+  tag: string;
+  imageState: ImageState;
+  switchInFlight: boolean;
+  onSwitch: (tag: string) => void;
+}) {
+  if (!isDrift(imageState)) {
+    return <span className="text-muted small">In use</span>;
+  }
+  // `restart-required` only needs a restart, but routing it through the
+  // same switch flow (which re-pulls the already-current digest, a no-op,
+  // then restarts) keeps one code path, one confirm dialog, and the same
+  // rollback safety net. The label tells the operator which case it is.
+  const label = imageState === 'restart-required' ? 'Restart to apply' : 'Update & restart';
+  return (
+    <Button size="sm" color="warning" disabled={switchInFlight} onClick={() => onSwitch(tag)}>
+      {label}
+    </Button>
   );
 }
