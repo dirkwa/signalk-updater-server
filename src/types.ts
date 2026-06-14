@@ -242,15 +242,42 @@ export type SwitchStage =
   | 'complete'
   | 'failed';
 
+/** Which engine a progress event is about. The broker is shared (the
+ *  CC-5 mutex guarantees one flow at a time), so the discriminator lets
+ *  the UI route the event to the right card. Absent is treated as
+ *  'signalk-server' for backward compat with pre-discriminator events. */
+export type SwitchTarget = 'signalk-server' | 'doctor';
+
 /** One SSE message on the switch progress stream. */
 export interface SwitchProgressEvent {
   stage: SwitchStage;
+  /** The engine this event concerns. Optional on the wire; absent means
+   *  'signalk-server' (the only publisher before doctor updates streamed). */
+  target?: SwitchTarget;
   message?: string;
   to?: string;
   from?: string;
   error?: string;
   /** ISO 8601 timestamp the event was published. */
   at: string;
+}
+
+/** The operation lock as the mutex records it. Mirrors src/mutex.ts
+ *  LockInfo (kept here too so the wire contract for GET /api/lock has a
+ *  single shared definition the webapp can mirror). */
+export interface LockInfo {
+  owner: 'updater' | 'doctor';
+  operation: 'switch' | 'rollback' | 'self-update' | 'doctor-switch' | 'hardware-apply' | 'recover';
+  startedAt: string;
+  pid?: number;
+}
+
+/** GET /api/lock payload: the current operation lock plus whether it's
+ *  old enough to be considered stale (a crashed op that never released). */
+export interface LockStatus {
+  lock: LockInfo | null;
+  ageMs: number | null;
+  stale: boolean;
 }
 
 export type RuntimeKind = 'podman' | 'docker' | 'unknown';

@@ -1,4 +1,4 @@
-import { useCallback, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   Alert,
   Badge,
@@ -11,7 +11,7 @@ import {
   Row,
   Spinner,
 } from 'reactstrap';
-import { api } from '../api';
+import { api, getApiBase } from '../api';
 import { useApi } from '../hooks/useApi';
 import { useToast } from '../toast';
 import { useConfirm } from '../confirm';
@@ -26,7 +26,9 @@ import type {
   DriftPackage,
   HealthResponse,
   ImageState,
+  LockStatus,
   SelfState,
+  SwitchProgressEvent,
 } from '../types';
 
 const STATE_COLOR: Record<ContainerSnapshot['state'], string> = {
@@ -154,6 +156,31 @@ function ImageStateNotice({
   );
 }
 
+/** Inline doctor-update progress, driven by the shared switch-progress
+ *  SSE (filtered to target:'doctor'). Renders while an update is in
+ *  flight from this tab OR while a non-terminal doctor event is the last
+ *  thing the stream reported (so a tab opened mid-update still shows it).
+ *  The terminal toast is handled by the Dashboard's SSE effect; this is
+ *  just the live stage line. */
+function DoctorUpdateProgress({
+  event,
+  active,
+}: {
+  event: SwitchProgressEvent | null;
+  active: boolean;
+}) {
+  const terminal = event?.stage === 'complete' || event?.stage === 'failed';
+  if (!active && (!event || terminal)) return null;
+  const color = event?.stage === 'rolling-back' ? 'warning' : 'info';
+  const label = event?.message ?? 'Updating…';
+  return (
+    <Alert color={color} className="mt-3 mb-0 py-2 px-3 small d-flex align-items-center">
+      <Spinner size="sm" className="me-2" />
+      <span className="text-truncate">{label}</span>
+    </Alert>
+  );
+}
+
 const CLASSIFICATION_COLOR: Record<DriftPackage['classification'], string> = {
   'up-to-date': 'success',
   patch: 'info',
@@ -223,6 +250,84 @@ export function Dashboard() {
   const updates = useApi<AvailableUpdates>((signal) => api('/api/updates/available', { signal }), {
     intervalMs: 5 * 60 * 1000,
   });
+  // Operation-lock status. Surfaces an in-flight switch/update and, more
+  // importantly, a STALE lock (a crashed operation that never released)
+  // that would otherwise wedge every update button with silent 409s.
+  const lock = useApi<LockStatus>((signal) => api('/api/lock', { signal }), {
+    intervalMs: 10000,
+  });
+
+  // True while POST /api/doctor/update is in flight from THIS tab. The
+  // doctor update is a single long POST (pull + restart + up-to-180s
+  // health-poll); without an in-flight guard the button stays pressable
+  // and a second click races the mutex into a 409. Also: behind the
+  // embedded plugin proxy the long POST can time out into a 502 while the
+  // switch keeps running server-side — so we drive the real outcome off
+  // the SSE progress stream (below), not this POST's response.
+  const [doctorUpdating, setDoctorUpdating] = useState(false);
+  const [doctorProgress, setDoctorProgress] = useState<SwitchProgressEvent | null>(null);
+
+  // Refs so the SSE handler can refresh the polled views on a terminal
+  // event without re-subscribing every render.
+  const doctorRef = useRef(doctor);
+  doctorRef.current = doctor;
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const updatesRef = useRef(updates);
+  updatesRef.current = updates;
+  const lockRef = useRef(lock);
+  lockRef.current = lock;
+  const toastRef = useRef(toast);
+  toastRef.current = toast;
+
+  // Subscribe to the shared switch-progress SSE, filtered to the doctor.
+  // The broker replays its last event on connect, so a tab opened
+  // mid-update picks up the in-flight stage. On a terminal event we
+  // refresh the doctor/state/updates/lock views so the card and button
+  // settle to the truth regardless of what the POST response did.
+  useEffect(() => {
+    const es = new EventSource(`${getApiBase()}/api/versions/switch/stream`);
+    es.onmessage = (ev: MessageEvent<string>) => {
+      let parsed: SwitchProgressEvent;
+      try {
+        parsed = JSON.parse(ev.data) as SwitchProgressEvent;
+      } catch {
+        return;
+      }
+      if (parsed.target !== 'doctor') return;
+      setDoctorProgress(parsed);
+      if (parsed.stage === 'complete' || parsed.stage === 'failed') {
+        setDoctorUpdating(false);
+        if (parsed.stage === 'complete') {
+          toastRef.current.show(`signalk-doctor-server updated to ${parsed.to ?? ''}`.trim(), 'ok');
+        } else {
+          toastRef.current.show(`Doctor update failed: ${parsed.error ?? 'unknown'}`, 'err', 8000);
+        }
+        void doctorRef.current.refresh();
+        void stateRef.current.refresh();
+        void updatesRef.current.refresh();
+        void lockRef.current.refresh();
+      }
+    };
+    es.onerror = () => {
+      // EventSource auto-reconnects on transient drops; nothing to do but
+      // note it. The terminal outcome also has the POST-error safety net,
+      // so a brief stream gap doesn't strand the user.
+
+      console.debug('SSE switch-progress stream reconnecting…');
+    };
+    return () => es.close();
+  }, []);
+
+  // Mount flag so the doctor-update safety timeout can't setState after
+  // unmount (it fires up to ~200s later).
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   // True while `POST /api/updates/check` is in flight. The endpoint can
   // take 20–60s on a slow VM (sequential per-tag manifest fetches against
@@ -312,30 +417,56 @@ export function Dashboard() {
 
   const doctorUpdate = useCallback(async (): Promise<void> => {
     const tag = doctor.data?.availableTag;
-    if (!tag) return;
+    if (!tag || doctorUpdating) return;
     const r = await confirm.ask({
       title: `Update signalk-doctor-server to ${tag}?`,
       body: 'The updater will pull the new image, restart the doctor, and roll back if it does not come up healthy. The doctor is the recovery surface, so this is the safe place to drive the update from.',
       okLabel: 'Update',
     });
     if (!r.confirmed) return;
+    setDoctorUpdating(true);
+    setDoctorProgress(null);
     try {
       toast.show(`Updating signalk-doctor-server to ${tag}…`, 'info', 60000);
+      // The success/failure toast + state refresh is driven by the SSE
+      // terminal event (see the effect above), NOT this response: behind
+      // the embedded proxy the long POST can 502 while the switch is still
+      // running, and the stream is the reliable outcome signal. We still
+      // await it to surface a synchronous error (e.g. 409 mutex-busy) the
+      // stream wouldn't carry.
       await api('/api/doctor/update', { method: 'POST', body: { tag } });
-      toast.show(`signalk-doctor-server updated to ${tag}`, 'ok');
+    } catch (err) {
+      // A 502/timeout here is expected when the proxy gives up on the long
+      // POST — the SSE stream will still deliver the real result, so only
+      // clear the in-flight state on a definite non-progress error and let
+      // the user see it. Refresh lock/doctor so a mutex 409 or a
+      // partially-applied switch is reflected immediately.
+      const msg = err instanceof Error ? err.message : String(err);
+      toast.show(`Doctor update: ${msg} (watching progress…)`, 'err', 8000);
+      void lock.refresh();
+      void doctor.refresh();
+      // Safety net: if no SSE terminal event arrives within the health
+      // window, stop showing the button as busy so the user isn't stuck.
+      // Guard against firing after unmount.
       setTimeout(() => {
-        void doctor.refresh();
-        void state.refresh();
-        void updates.refresh();
-      }, 1500);
+        if (mountedRef.current) setDoctorUpdating(false);
+      }, 200000);
+    }
+  }, [confirm, doctor, doctorUpdating, lock, toast]);
+
+  const clearLock = useCallback(async (): Promise<void> => {
+    try {
+      await api('/api/lock/clear', { method: 'POST' });
+      toast.show('Operation lock cleared', 'ok');
+      await Promise.all([lock.refresh(), doctor.refresh(), state.refresh()]);
     } catch (err) {
       toast.show(
-        `Doctor update failed: ${err instanceof Error ? err.message : String(err)}`,
+        `Could not clear lock: ${err instanceof Error ? err.message : String(err)}`,
         'err',
-        8000,
+        6000,
       );
     }
-  }, [confirm, doctor, state, updates, toast]);
+  }, [lock, doctor, state, toast]);
 
   const lastChecked = updates.data?.lastCheckedAt ? relTime(updates.data.lastCheckedAt) : 'never';
 
@@ -364,6 +495,24 @@ export function Dashboard() {
       {state.error !== null ? (
         <Alert color="danger" className="mb-3">
           Failed to load state: {state.error}
+        </Alert>
+      ) : null}
+
+      {lock.data?.stale && lock.data.lock ? (
+        <Alert color="warning" className="mb-3 d-flex justify-content-between align-items-center">
+          <span>
+            An operation lock from <code>{lock.data.lock.operation}</code> has been held since{' '}
+            {relTime(lock.data.lock.startedAt)} — most likely a crashed update that never released.
+            It is blocking new switches and updates.
+          </span>
+          <Button
+            color="warning"
+            size="sm"
+            className="ms-3 flex-shrink-0"
+            onClick={() => void clearLock()}
+          >
+            Clear lock
+          </Button>
         </Alert>
       ) : null}
 
@@ -518,6 +667,7 @@ export function Dashboard() {
                       updates.data?.doctor.imageState,
                     )}
                   />
+                  <DoctorUpdateProgress event={doctorProgress} active={doctorUpdating} />
                 </>
               ) : (
                 <Spinner size="sm" />
@@ -527,10 +677,17 @@ export function Dashboard() {
               <Button
                 size="sm"
                 color="primary"
-                disabled={!doctor.data?.updateAvailable}
+                disabled={!doctor.data?.updateAvailable || doctorUpdating}
                 onClick={() => void doctorUpdate()}
               >
-                Update
+                {doctorUpdating ? (
+                  <>
+                    <Spinner size="sm" className="me-2" />
+                    Updating…
+                  </>
+                ) : (
+                  'Update'
+                )}
               </Button>
             </div>
           </Card>

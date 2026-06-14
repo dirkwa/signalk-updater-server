@@ -13,6 +13,7 @@ import { registerDoctorRoutes } from './routes/doctor.js';
 import { registerUpdateRoutes } from './routes/updates.js';
 import { registerLogStreamRoutes } from './routes/logs-stream.js';
 import { registerHardwareRoutes } from './routes/hardware.js';
+import { registerLockRoutes } from './routes/lock.js';
 import { startUpdateChecker } from './update-checker.js';
 
 // Built webapp directory inside the container image. The Vite build
@@ -41,6 +42,7 @@ export async function createServer(): Promise<FastifyInstance> {
   await registerUpdateRoutes(app);
   await registerLogStreamRoutes(app);
   await registerHardwareRoutes(app);
+  await registerLockRoutes(app);
 
   // Boot the daily GHCR check. Runs once immediately so the
   // /api/updates/available cache is warm by the time the dashboard

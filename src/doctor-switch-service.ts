@@ -5,7 +5,18 @@ import { withMutex } from './mutex.js';
 import { DEFAULT_HEALTH_TIMEOUT_MS, pollHealth, pullImage, trialRun } from './container-ops.js';
 import { invalidate as invalidateUpdatesCache } from './update-checker.js';
 import { resolveDoctorHealthUrl } from './signalk-url-resolver.js';
-import type { SwitchResult } from './types.js';
+import { publishSwitchEvent } from './switch-progress-broker.js';
+import type { SwitchProgressEvent, SwitchResult } from './types.js';
+
+// All progress events from this flow carry target:'doctor' so the UI
+// routes them to the Doctor card (the broker is shared with the
+// signalk-server switch — the CC-5 mutex guarantees only one runs at a
+// time). The browser drives the doctor-update outcome off this stream's
+// terminal event, so a proxy that times out the long POST and returns 502
+// no longer hides the real result.
+function emit(ev: Omit<SwitchProgressEvent, 'at' | 'target'>): void {
+  publishSwitchEvent({ ...ev, target: 'doctor' });
+}
 
 // Same shape as switch-service.ts but pointed at the doctor's image,
 // Quadlet, unit, and health URL. The doctor doesn't take a pre-switch
@@ -36,8 +47,10 @@ async function doDoctorSwitch(input: DoctorSwitchInput): Promise<SwitchResult> {
   let snapshotPath: string;
 
   // 1. Pull
+  emit({ stage: 'pulling', to: input.tag, message: `Pulling ${newImage}…` });
   const pull = await pullImage(newImage);
   if (!pull.ok) {
+    emit({ stage: 'failed', to: input.tag, error: `pull failed: ${pull.error}` });
     return {
       ok: false,
       from: '',
@@ -49,8 +62,10 @@ async function doDoctorSwitch(input: DoctorSwitchInput): Promise<SwitchResult> {
   }
 
   // 2. Trial run with the new image
+  emit({ stage: 'trial', to: input.tag, message: 'Trial-running new image…' });
   const trial = await trialRun(newImage, TRIAL_NAME_PREFIX);
   if (!trial.ok) {
+    emit({ stage: 'failed', to: input.tag, error: `trial-run failed: ${trial.error}` });
     return {
       ok: false,
       from: '',
@@ -62,12 +77,14 @@ async function doDoctorSwitch(input: DoctorSwitchInput): Promise<SwitchResult> {
   }
 
   // 3. Rewrite Quadlet atomically (snapshots first per CC-1)
+  emit({ stage: 'rewriting-quadlet', to: input.tag, message: 'Rewriting Quadlet…' });
   try {
     const rewrite = await rewriteQuadletImage(DOCTOR_QUADLET, newImage);
     previousImage = rewrite.previousImage;
     snapshotPath = rewrite.snapshotPath;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    emit({ stage: 'failed', to: input.tag, error: `quadlet rewrite failed: ${msg}` });
     return {
       ok: false,
       from: '',
@@ -80,15 +97,33 @@ async function doDoctorSwitch(input: DoctorSwitchInput): Promise<SwitchResult> {
 
   // 4. daemon-reload + stop + start (NOT RestartUnit — see switch-service.ts
   // for the auto-restart-timer rationale; same applies here)
+  emit({
+    stage: 'restarting',
+    to: input.tag,
+    from: previousImage,
+    message: 'Restarting signalk-doctor-server…',
+  });
   const dbusOk = await safe(async () => {
     await daemonReload();
     await stopUnitAndWait(DOCTOR_UNIT);
     await startUnit(DOCTOR_UNIT);
   });
   if (!dbusOk.ok) {
+    emit({
+      stage: 'rolling-back',
+      to: input.tag,
+      from: previousImage,
+      error: `systemd restart failed: ${dbusOk.error.userMessage}`,
+    });
     if (previousImage) {
       await rewriteQuadletImage(DOCTOR_QUADLET, previousImage).catch(() => undefined);
     }
+    emit({
+      stage: 'failed',
+      to: input.tag,
+      from: previousImage,
+      error: `systemd restart failed: ${dbusOk.error.userMessage}`,
+    });
     return {
       ok: false,
       from: previousImage,
@@ -103,8 +138,23 @@ async function doDoctorSwitch(input: DoctorSwitchInput): Promise<SwitchResult> {
   // 5. Health poll
   const timeoutMs = input.healthTimeoutMs ?? DEFAULT_HEALTH_TIMEOUT_MS;
   const healthUrl = await resolveDoctorHealthUrl();
-  const healthy = await pollHealth(healthUrl, timeoutMs);
+  const healthy = await pollHealth(healthUrl, timeoutMs, {
+    onProgress: (p) => {
+      emit({
+        stage: 'health-poll',
+        to: input.tag,
+        from: previousImage,
+        message: `Waiting for doctor health… ${Math.round(p.elapsedMs / 1000)}s of ${Math.round(p.timeoutMs / 1000)}s (attempt ${p.attempt})`,
+      });
+    },
+  });
   if (!healthy) {
+    emit({
+      stage: 'rolling-back',
+      to: input.tag,
+      from: previousImage,
+      error: `signalk-doctor-server did not become healthy within ${timeoutMs}ms`,
+    });
     if (previousImage) {
       await rewriteQuadletImage(DOCTOR_QUADLET, previousImage).catch(() => undefined);
       await safe(async () => {
@@ -113,6 +163,12 @@ async function doDoctorSwitch(input: DoctorSwitchInput): Promise<SwitchResult> {
         await startUnit(DOCTOR_UNIT);
       });
     }
+    emit({
+      stage: 'failed',
+      to: input.tag,
+      from: previousImage,
+      error: `signalk-doctor-server did not become healthy within ${timeoutMs}ms`,
+    });
     return {
       ok: false,
       from: previousImage,
@@ -136,6 +192,13 @@ async function doDoctorSwitch(input: DoctorSwitchInput): Promise<SwitchResult> {
   // racing against a stale "updateAvailable: true" from before the
   // switch. Fire-and-forget; the refresh happens in the background.
   invalidateUpdatesCache();
+
+  emit({
+    stage: 'complete',
+    to: input.tag,
+    from: previousImage,
+    message: `Updated signalk-doctor-server to ${input.tag}`,
+  });
 
   return {
     ok: true,

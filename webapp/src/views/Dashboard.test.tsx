@@ -82,6 +82,14 @@ const sampleUpdates: AvailableUpdates = {
   lastCheckedAt: new Date().toISOString(),
 };
 
+const noLock = { lock: null, ageMs: null, stale: false };
+
+const staleLock = {
+  lock: { owner: 'updater', operation: 'doctor-switch', startedAt: '2026-06-15T00:00:00Z' },
+  ageMs: 11 * 60 * 1000,
+  stale: true,
+};
+
 function renderDashboard() {
   return render(
     <ToastProvider>
@@ -100,6 +108,7 @@ describe('Dashboard', () => {
       '/api/self/state': sampleSelf,
       '/api/doctor/state': sampleDoctor,
       '/api/updates/available': sampleUpdates,
+      '/api/lock': noLock,
     });
   });
 
@@ -172,5 +181,24 @@ describe('Dashboard', () => {
     expect(await screen.findByText('Update available')).toBeInTheDocument();
     // No "Restart now" — a pull is needed first, pointed at the Versions tab.
     expect(screen.queryByRole('button', { name: /restart now/i })).not.toBeInTheDocument();
+  });
+
+  it('surfaces a stale operation lock with a Clear control', async () => {
+    mockFetch({
+      '/api/state': sampleState,
+      '/api/health': sampleHealth,
+      '/api/self/state': sampleSelf,
+      '/api/doctor/state': sampleDoctor,
+      '/api/updates/available': sampleUpdates,
+      '/api/lock': staleLock,
+    });
+    renderDashboard();
+    expect(await screen.findByRole('button', { name: /clear lock/i })).toBeInTheDocument();
+  });
+
+  it('does not show the lock alert when no lock is held', async () => {
+    renderDashboard();
+    await screen.findByText('Doctor');
+    expect(screen.queryByRole('button', { name: /clear lock/i })).not.toBeInTheDocument();
   });
 });
