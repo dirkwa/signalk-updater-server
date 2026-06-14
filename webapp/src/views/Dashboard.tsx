@@ -16,6 +16,7 @@ import { useApi } from '../hooks/useApi';
 import { useToast } from '../toast';
 import { useConfirm } from '../confirm';
 import { fmtTime, relTime } from '../time';
+import { mergeImageState } from '../image-state';
 import type {
   AvailableUpdates,
   ChannelOrUnknown,
@@ -108,37 +109,6 @@ function VersionCell({ version }: { version: string | null }) {
   return <span className="font-monospace">{version}</span>;
 }
 
-/** Combine the two image-state signals into the one to display.
- *  `/api/state` is the instant, network-free signal (so it carries
- *  'restart-required' the moment a pull happens), while
- *  `/api/updates/available` is refreshed on the GHCR cadence (so it's the
- *  only one that ever reports 'pull-available'). When they disagree, take
- *  the union: a tag can have moved on GHCR (pull-available, from updates)
- *  AND have a pulled-but-not-restarted image (restart-required, from
- *  state) at the same time → 'pull-and-restart'. */
-export function mergeImageState(
-  fromState: ImageState | undefined,
-  fromUpdates: ImageState | undefined,
-): ImageState {
-  const restart =
-    fromState === 'restart-required' ||
-    fromState === 'pull-and-restart' ||
-    fromUpdates === 'restart-required' ||
-    fromUpdates === 'pull-and-restart';
-  const pull =
-    fromState === 'pull-available' ||
-    fromState === 'pull-and-restart' ||
-    fromUpdates === 'pull-available' ||
-    fromUpdates === 'pull-and-restart';
-  if (restart && pull) return 'pull-and-restart';
-  if (pull) return 'pull-available';
-  if (restart) return 'restart-required';
-  // Neither found drift. If at least one side gave a definite 'in-sync',
-  // report that; otherwise we genuinely don't know.
-  if (fromState === 'in-sync' || fromUpdates === 'in-sync') return 'in-sync';
-  return 'unknown';
-}
-
 /** Drift notice for a container card. Renders nothing when in-sync or
  *  unknown — only the actionable states earn the operator's attention.
  *  `onRestart` is wired for containers where a restart is the local fix
@@ -166,8 +136,7 @@ function ImageStateNotice({
       {needsPull ? (
         <div>
           A newer image for this tag is on the registry.{' '}
-          <a href="#/versions">Pull it on the Versions tab</a>
-          {needsRestart ? ', then restart.' : '.'}
+          <a href="#/versions">Update &amp; restart it on the Versions tab</a>.
         </div>
       ) : null}
       {needsRestart && !needsPull ? (

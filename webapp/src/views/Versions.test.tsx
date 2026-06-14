@@ -3,7 +3,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import { Versions } from './Versions';
 import { ToastProvider } from '../toast';
 import { ConfirmProvider } from '../confirm';
-import type { CurrentState, VersionSettings, VersionsResponse } from '../types';
+import type { AvailableUpdates, CurrentState, VersionSettings, VersionsResponse } from '../types';
 
 // vi.restoreAllMocks() resets vi.fn spies but doesn't undo a direct
 // globalThis.fetch assignment. Snapshot and restore by hand so a
@@ -74,6 +74,59 @@ const sampleState: CurrentState = {
 
 const defaultSettings: VersionSettings = { showBeta: false, showMaster: false };
 
+// No-drift default so the existing tests (which don't exercise the in-use
+// drift action) keep rendering the inert "In use" text.
+const noUpdates: AvailableUpdates = {
+  signalkServer: { currentTag: 'unknown', updateAvailable: false, imageState: 'in-sync' },
+  updater: { currentTag: 'unknown', updateAvailable: false },
+  doctor: { currentTag: 'unknown', updateAvailable: false },
+  lastCheckedAt: new Date().toISOString(),
+};
+
+// A dirkwa install whose in-use movable tag has a moved registry digest.
+const dirkwaVersions: VersionsResponse = {
+  cachedAt: new Date().toISOString(),
+  channels: {
+    stable: [],
+    beta: [],
+    master: [],
+    dirkwa: [
+      {
+        name: 'dirkwa',
+        channel: 'dirkwa',
+        digest: 'sha256:newremote',
+        pushedAt: '2026-06-15T05:04:00Z',
+        isLocal: true,
+      },
+    ],
+  },
+};
+
+const dirkwaState: CurrentState = {
+  signalkServer: {
+    tag: 'dirkwa',
+    digest: 'sha256:oldlocal',
+    state: 'running',
+    version: '2.28.0-beta.2',
+    channel: 'dirkwa',
+    imageState: 'pull-available',
+  },
+  updaterServer: { tag: 'v0.6.19', digest: 'sha256:fed', state: 'running', updateAvailable: false },
+  doctorServer: { tag: 'v0.3.0', digest: 'sha256:dca', state: 'stopped' },
+  lastCheck: new Date().toISOString(),
+};
+
+const dirkwaUpdates: AvailableUpdates = {
+  signalkServer: {
+    currentTag: '2.28.0-beta.2',
+    updateAvailable: false,
+    imageState: 'pull-available',
+  },
+  updater: { currentTag: 'unknown', updateAvailable: false },
+  doctor: { currentTag: 'unknown', updateAvailable: false },
+  lastCheckedAt: new Date().toISOString(),
+};
+
 function renderVersions() {
   return render(
     <ToastProvider>
@@ -90,6 +143,7 @@ describe('Versions', () => {
       '/api/versions': sampleVersions,
       '/api/state': sampleState,
       '/api/versions/settings': defaultSettings,
+      '/api/updates/available': noUpdates,
     });
   });
 
@@ -132,5 +186,20 @@ describe('Versions', () => {
     const pullBtns = await screen.findAllByRole('button', { name: /^pull$/i });
     expect(pullBtns.length).toBeGreaterThanOrEqual(1);
     expect(pullBtns[0]).not.toBeDisabled();
+  });
+
+  it('offers "Update & restart" on the in-use movable tag when its registry digest moved', async () => {
+    mockFetch({
+      '/api/versions': dirkwaVersions,
+      '/api/state': dirkwaState,
+      '/api/versions/settings': defaultSettings,
+      '/api/updates/available': dirkwaUpdates,
+    });
+    renderVersions();
+    await screen.findByText('current');
+    // The in-use row is actionable, not the inert "In use" text.
+    const btn = await screen.findByRole('button', { name: /update & restart/i });
+    expect(btn).not.toBeDisabled();
+    expect(screen.queryByText('In use')).not.toBeInTheDocument();
   });
 });
