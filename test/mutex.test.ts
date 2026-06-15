@@ -12,7 +12,7 @@ const dir = mkdtempSync(join(tmpdir(), 'mutex-test-'));
 const lockPath = join(dir, 'operation.lock');
 process.env.OPERATION_LOCK = lockPath;
 
-const { withMutex, MutexBusyError, STALE_LOCK_MS, forceClear, readLock } =
+const { withMutex, MutexBusyError, STALE_LOCK_MS, forceClear, readLock, releaseStaleLockAtBoot } =
   await import('../src/mutex.js');
 
 async function exists(p: string): Promise<boolean> {
@@ -49,9 +49,18 @@ describe('withMutex / stale-lock reclaim', () => {
   it('rejects a second concurrent acquire with MutexBusyError', async () => {
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));
+    let entered!: () => void;
+    const held = new Promise<void>((r) => (entered = r));
     const first = withMutex('switch', async () => {
+      // Signal that the lock is actually acquired BEFORE we attempt the
+      // second one. tryAcquire is async, so without this the second
+      // withMutex can race ahead of the first lock's write and acquire it
+      // (the first lock isn't on disk yet) — which is exactly the
+      // ordering CI hit. Await `held` first to make the test deterministic.
+      entered();
       await gate;
     });
+    await held;
     await expect(withMutex('doctor-switch', async () => undefined)).rejects.toBeInstanceOf(
       MutexBusyError,
     );
@@ -153,5 +162,57 @@ describe('withMutex / stale-lock reclaim', () => {
     await expect(withMutex('switch', async () => undefined)).rejects.toBeInstanceOf(MutexBusyError);
     expect(await exists(lockPath)).toBe(true);
     expect(await readFile(lockPath, 'utf8')).toContain('not-a-date');
+  });
+});
+
+describe('releaseStaleLockAtBoot', () => {
+  it('clears a stale lock and reports what it cleared', async () => {
+    const staleStarted = new Date(Date.now() - (STALE_LOCK_MS + 60_000)).toISOString();
+    await writeFile(
+      lockPath,
+      JSON.stringify({ owner: 'updater', operation: 'doctor-switch', startedAt: staleStarted }),
+    );
+    const out = await releaseStaleLockAtBoot();
+    expect(out.cleared).toBe(true);
+    if (out.cleared) {
+      expect(out.lock.operation).toBe('doctor-switch');
+      expect(out.ageMs).toBeGreaterThan(STALE_LOCK_MS);
+    }
+    expect(await exists(lockPath)).toBe(false);
+    // And the box is immediately operable again.
+    let ran = false;
+    await withMutex('self-update', async () => {
+      ran = true;
+    });
+    expect(ran).toBe(true);
+  });
+
+  it('leaves a FRESH lock untouched (does not clobber an in-flight op)', async () => {
+    await writeFile(
+      lockPath,
+      JSON.stringify({
+        owner: 'updater',
+        operation: 'switch',
+        startedAt: new Date(Date.now() - 5_000).toISOString(),
+      }),
+    );
+    const out = await releaseStaleLockAtBoot();
+    expect(out).toEqual({ cleared: false, reason: 'fresh' });
+    expect(await exists(lockPath)).toBe(true);
+  });
+
+  it('is a no-op when there is no lock', async () => {
+    const out = await releaseStaleLockAtBoot();
+    expect(out).toEqual({ cleared: false, reason: 'no-lock' });
+  });
+
+  it('leaves a lock with an unparseable timestamp (fail-safe)', async () => {
+    await writeFile(
+      lockPath,
+      JSON.stringify({ owner: 'updater', operation: 'switch', startedAt: 'not-a-date' }),
+    );
+    const out = await releaseStaleLockAtBoot();
+    expect(out.cleared).toBe(false);
+    expect(await exists(lockPath)).toBe(true);
   });
 });
