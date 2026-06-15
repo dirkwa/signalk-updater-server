@@ -187,6 +187,12 @@ export function Versions() {
     es.onmessage = (ev: MessageEvent<string>) => {
       try {
         const parsed = JSON.parse(ev.data) as SwitchProgressEvent;
+        // The broker is shared with doctor-update progress (target:'doctor',
+        // shown on the Dashboard's Doctor card). This Versions card is for
+        // signalk-server only — ignore doctor events so a doctor update
+        // doesn't leak a "Switch progress" card here. Absent target means
+        // signalk-server (pre-discriminator / switch events).
+        if (parsed.target === 'doctor') return;
         setProgress(parsed);
         if (parsed.stage === 'complete' || parsed.stage === 'failed') {
           // Refresh the version list + state so the "in use" badge and
