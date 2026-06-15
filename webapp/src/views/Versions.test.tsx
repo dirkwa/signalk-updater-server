@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { Versions } from './Versions';
 import { ToastProvider } from '../toast';
 import { ConfirmProvider } from '../confirm';
@@ -66,9 +66,28 @@ const sampleVersions: VersionsResponse = {
 };
 
 const sampleState: CurrentState = {
-  signalkServer: { tag: 'v2.24.0', digest: 'sha256:aaa111', state: 'running' },
-  updaterServer: { tag: 'v0.5.3', digest: 'sha256:fed', state: 'running', updateAvailable: false },
-  doctorServer: { tag: 'v0.3.0', digest: 'sha256:dca', state: 'stopped' },
+  signalkServer: {
+    tag: 'v2.24.0',
+    digest: 'sha256:aaa111',
+    state: 'running',
+    version: '2.24.0',
+    channel: 'stable',
+  },
+  updaterServer: {
+    tag: 'v0.5.3',
+    digest: 'sha256:fed',
+    state: 'running',
+    updateAvailable: false,
+    version: '0.5.3',
+    channel: 'stable',
+  },
+  doctorServer: {
+    tag: 'v0.3.0',
+    digest: 'sha256:dca',
+    state: 'stopped',
+    version: '0.3.0',
+    channel: 'stable',
+  },
   lastCheck: new Date().toISOString(),
 };
 
@@ -111,8 +130,21 @@ const dirkwaState: CurrentState = {
     channel: 'dirkwa',
     imageState: 'pull-available',
   },
-  updaterServer: { tag: 'v0.6.19', digest: 'sha256:fed', state: 'running', updateAvailable: false },
-  doctorServer: { tag: 'v0.3.0', digest: 'sha256:dca', state: 'stopped' },
+  updaterServer: {
+    tag: 'v0.6.19',
+    digest: 'sha256:fed',
+    state: 'running',
+    updateAvailable: false,
+    version: '0.6.19',
+    channel: 'stable',
+  },
+  doctorServer: {
+    tag: 'v0.3.0',
+    digest: 'sha256:dca',
+    state: 'stopped',
+    version: '0.3.0',
+    channel: 'stable',
+  },
   lastCheck: new Date().toISOString(),
 };
 
@@ -186,6 +218,38 @@ describe('Versions', () => {
     const pullBtns = await screen.findAllByRole('button', { name: /^pull$/i });
     expect(pullBtns.length).toBeGreaterThanOrEqual(1);
     expect(pullBtns[0]).not.toBeDisabled();
+  });
+
+  it('dispatches POST /api/versions/pull and shows the spinner on Pull click', async () => {
+    mockFetch({
+      '/api/versions': sampleVersions,
+      '/api/state': sampleState,
+      '/api/versions/settings': defaultSettings,
+      '/api/updates/available': noUpdates,
+      // The pull route returns 202 immediately; the outcome arrives via SSE,
+      // so the spinner stays up after the click (no terminal event in test).
+      '/api/versions/pull': {
+        ok: true,
+        accepted: true,
+        image: 'ghcr.io/dirkwa/signalk-server:v2.22.0',
+      },
+    });
+    renderVersions();
+    await screen.findByText('v2.22.0');
+    const pullBtns = await screen.findAllByRole('button', { name: /^pull$/i });
+    const pullBtn = pullBtns[0];
+    if (!pullBtn) throw new Error('expected at least one Pull button');
+    fireEvent.click(pullBtn);
+    // The POST is dispatched...
+    await waitFor(() => {
+      const calls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.map((c) =>
+        String(c[0]),
+      );
+      expect(calls.some((u) => u.includes('/api/versions/pull'))).toBe(true);
+    });
+    // ...and the button shows the in-flight "Pulling…" state (cleared later
+    // by the SSE terminal event, which the inert test stub doesn't emit).
+    expect(await screen.findByText(/pulling…/i)).toBeInTheDocument();
   });
 
   it('offers "Update & restart" on the in-use movable tag when its registry digest moved', async () => {
