@@ -25,7 +25,16 @@ async function buildVersionsResponse(
 > {
   const r = await listTags(TARGET_IMAGE, { force });
   if (!r.ok) {
-    return { ok: false, status: 502, body: { error: r.error.userMessage, kind: r.error.kind } };
+    // Map the failure kind to an honest status. Transient
+    // connectivity/registry blips (common on boat LTE links) become 503
+    // "Service Unavailable" — a retry-and-it'll-work signal — so the UI
+    // can show a calm "try again" instead of an alarming hard error. A
+    // genuine upstream/unknown error stays 502. The `error` field always
+    // carries the human userMessage so the client never has to fall back
+    // to rendering the bare status code.
+    const status =
+      r.error.kind === 'network' || r.error.kind === 'registry-unavailable' ? 503 : 502;
+    return { ok: false, status, body: { error: r.error.userMessage, kind: r.error.kind } };
   }
   const local = await listLocalImagesFor([TARGET_IMAGE]);
   const localTags = new Set(local.images.map((i) => i.tag));
