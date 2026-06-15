@@ -26,7 +26,6 @@ import type {
   CurrentState,
   ImageState,
   SwitchProgressEvent,
-  SwitchResult,
   VersionSettings,
   VersionsResponse,
 } from '../types';
@@ -172,6 +171,9 @@ export function Versions() {
   // So the SSE handler can clear the in-flight Pull spinner on the
   // terminal event (a background pull streams over the same channel).
   const pullingTagRef = useRef<string | null>(null);
+  // True when a switch was kicked off from THIS tab, so the SSE handler
+  // toasts its terminal outcome (the 202 response no longer carries it).
+  const switchInitiatedRef = useRef(false);
   const toastRef = useRef(toast);
   toastRef.current = toast;
 
@@ -207,6 +209,19 @@ export function Versions() {
               toastRef.current.show(`Pulled ${tag}`, 'ok');
             } else {
               toastRef.current.show(`Pull failed: ${parsed.error ?? 'unknown error'}`, 'err', 8000);
+            }
+          } else if (switchInitiatedRef.current) {
+            // A switch kicked off from this tab finished. The 202 response
+            // didn't carry the outcome, so report it here.
+            switchInitiatedRef.current = false;
+            if (parsed.stage === 'complete') {
+              toastRef.current.show(`Switched to ${parsed.to ?? ''}`.trim(), 'ok');
+            } else {
+              toastRef.current.show(
+                `Switch failed: ${parsed.error ?? 'unknown error'}`,
+                'err',
+                8000,
+              );
             }
           }
         }
@@ -290,33 +305,27 @@ export function Versions() {
       });
       if (!r.confirmed) return;
       try {
-        toast.show(`Switching to ${tag}…`, 'info', 30000);
-        const result = await api<SwitchResult>('/api/versions/switch', {
+        // Returns 202 immediately; the switch runs server-side and streams
+        // stages over the SSE channel (rendered by the progress card). The
+        // terminal outcome toast + refresh are handled by the SSE handler,
+        // NOT here — a blocking request would 502 through the embedded
+        // proxy mid-switch. We only handle a synchronous dispatch failure.
+        switchInitiatedRef.current = true;
+        toast.show(`Switching to ${tag}… (progress below)`, 'info');
+        await api('/api/versions/switch', {
           method: 'POST',
           body: { tag, skipBackup: r.skipBackup },
         });
-        if (result.rolledBack === true) {
-          toast.show(
-            `Switch failed; rolled back to ${result.from}. ${result.error ?? ''}`.trim(),
-            'err',
-            8000,
-          );
-        } else if (result.ok) {
-          const secs = Math.round(result.durationMs / 100) / 10;
-          toast.show(`Switched to ${result.to} in ${secs}s`, 'ok');
-        } else {
-          toast.show(`Switch returned: ${result.error ?? 'unknown failure'}`, 'err');
-        }
-        setTimeout(() => void state.refresh(), 1500);
       } catch (err) {
+        switchInitiatedRef.current = false;
         toast.show(
-          `Switch failed: ${err instanceof Error ? err.message : String(err)}`,
+          `Could not start switch: ${err instanceof Error ? err.message : String(err)}`,
           'err',
           8000,
         );
       }
     },
-    [confirm, state, toast],
+    [confirm, toast],
   );
 
   const currentTag = state.data?.signalkServer.tag ?? null;
