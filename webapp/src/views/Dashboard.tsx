@@ -156,6 +156,44 @@ function ImageStateNotice({
   );
 }
 
+/** Prominent semver-update banner for an engine card (Updater / Doctor),
+ *  mirroring the server card's ImageStateNotice so a self-update is as
+ *  eye-catching as the server's "Update available" alert — not a quiet
+ *  text row that's easy to miss. Renders only when a newer version is
+ *  actually available; the calmer "Up to date" / version detail stays in
+ *  the rows above. The button runs the same action as the card footer. */
+function EngineUpdateNotice({
+  available,
+  busy,
+  onUpdate,
+  actionLabel,
+}: {
+  available: string | null | undefined;
+  busy?: boolean;
+  onUpdate: () => void;
+  actionLabel: string;
+}) {
+  if (!available) return null;
+  return (
+    <Alert color="warning" className="mt-3 mb-0 py-2 px-3 small">
+      <div className="fw-semibold mb-1">Update available</div>
+      <div className="mb-2">
+        A newer version <code>{available}</code> is on the registry.
+      </div>
+      <Button color="warning" size="sm" disabled={busy} onClick={onUpdate}>
+        {busy ? (
+          <>
+            <Spinner size="sm" className="me-2" />
+            Updating…
+          </>
+        ) : (
+          actionLabel
+        )}
+      </Button>
+    </Alert>
+  );
+}
+
 /** Inline doctor-update progress, driven by the shared switch-progress
  *  SSE (filtered to target:'doctor'). Renders while an update is in
  *  flight from this tab OR while a non-terminal doctor event is the last
@@ -609,6 +647,11 @@ export function Dashboard() {
                       updates.data?.updater.imageState,
                     )}
                   />
+                  <EngineUpdateNotice
+                    available={self.data?.updateAvailable ? self.data.availableTag : null}
+                    onUpdate={() => void selfUpdate()}
+                    actionLabel="Self-update"
+                  />
                 </>
               ) : (
                 <Spinner size="sm" />
@@ -667,6 +710,15 @@ export function Dashboard() {
                       updates.data?.doctor.imageState,
                     )}
                   />
+                  {/* While an update is in flight the progress card below
+                      takes over; otherwise show the prominent CTA banner. */}
+                  {!doctorUpdating ? (
+                    <EngineUpdateNotice
+                      available={doctor.data?.updateAvailable ? doctor.data.availableTag : null}
+                      onUpdate={() => void doctorUpdate()}
+                      actionLabel="Update"
+                    />
+                  ) : null}
                   <DoctorUpdateProgress event={doctorProgress} active={doctorUpdating} />
                 </>
               ) : (

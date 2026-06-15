@@ -142,6 +142,40 @@ describe('Dashboard', () => {
     expect(btn).toBeDisabled();
   });
 
+  it('shows a prominent Update-available banner on the Updater card when a newer version exists', async () => {
+    mockFetch({
+      '/api/state': sampleState,
+      '/api/health': sampleHealth,
+      '/api/self/state': { currentTag: '0.6.20', availableTag: '0.6.23', updateAvailable: true },
+      '/api/doctor/state': sampleDoctor,
+      '/api/updates/available': sampleUpdates,
+      '/api/lock': noLock,
+    });
+    renderDashboard();
+    // The banner calls out the available version prominently (not just the
+    // quiet "Available: …" row) and offers an enabled action.
+    expect(await screen.findByText('Update available')).toBeInTheDocument();
+    expect(await screen.findByText('0.6.23')).toBeInTheDocument();
+    const selfBtns = await screen.findAllByRole('button', { name: /^self-update$/i });
+    // At least one in the banner and one in the footer — all enabled.
+    expect(selfBtns.length).toBeGreaterThanOrEqual(2);
+    selfBtns.forEach((b) => expect(b).not.toBeDisabled());
+  });
+
+  it('shows a prominent Update banner on the Doctor card when a newer version exists', async () => {
+    mockFetch({
+      '/api/state': sampleState,
+      '/api/health': sampleHealth,
+      '/api/self/state': sampleSelf,
+      '/api/doctor/state': { currentTag: '0.7.10', availableTag: '0.7.16', updateAvailable: true },
+      '/api/updates/available': sampleUpdates,
+      '/api/lock': noLock,
+    });
+    renderDashboard();
+    expect(await screen.findByText('Update available')).toBeInTheDocument();
+    expect(await screen.findByText('0.7.16')).toBeInTheDocument();
+  });
+
   it('shows a restart-required notice + Restart-now button when the running image is stale', async () => {
     // /api/state carries the instant, network-free restart-required signal
     // (the real "newer image pulled, container not restarted" case).
