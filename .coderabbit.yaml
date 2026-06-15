@@ -116,8 +116,10 @@ reviews:
           runtime checks at boundaries (HTTP request bodies, child-
           process stdout, dockerode responses).
         - Node `>= 24` per `engines`. Native fetch is fine. Codebase
-          convention: named imports from `fs/promises`. Don't suggest
-          the `node:` prefix — the project deliberately doesn't use it.
+          convention: named imports from built-in modules WITH the
+          `node:` prefix (e.g. `import { readFile } from 'node:fs/promises'`,
+          `node:path`, `node:net`). This is consistent throughout `src/`
+          and `test/`; don't suggest stripping the prefix.
 
         ## Webapp stack (React 19 + Vite + reactstrap + Bootstrap 5)
 

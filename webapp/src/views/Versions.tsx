@@ -105,6 +105,37 @@ function isChannelVisible(channel: Channel, settings: VersionSettings | null): b
   return true;
 }
 
+// A transient registry blip (server maps network / registry-unavailable to
+// a "temporarily unavailable" / "could not reach" userMessage) reads as
+// "try again", not a hard failure — common on boat LTE links. Render it
+// as a calm warning with a Retry button. Anything else stays a danger
+// alert. We key off the message phrasing because useApi surfaces only the
+// message string, and that string now carries the retryable wording.
+function isTransientRegistryError(message: string): boolean {
+  return /temporarily unavailable|could not reach the registry/i.test(message);
+}
+
+function TagFetchError({ message, onRetry }: { message: string; onRetry: () => void }) {
+  const transient = isTransientRegistryError(message);
+  return (
+    <Alert
+      color={transient ? 'warning' : 'danger'}
+      className="d-flex justify-content-between align-items-center"
+    >
+      <span>{transient ? message : `Failed to fetch tags: ${message}`}</span>
+      <Button
+        size="sm"
+        color={transient ? 'warning' : 'danger'}
+        outline
+        className="ms-3 flex-shrink-0"
+        onClick={onRetry}
+      >
+        Retry
+      </Button>
+    </Alert>
+  );
+}
+
 export function Versions() {
   const toast = useToast();
   const confirm = useConfirm();
@@ -311,7 +342,7 @@ export function Versions() {
       {progress !== null && progress.stage !== 'idle' ? <ProgressCard event={progress} /> : null}
 
       {versions.error !== null ? (
-        <Alert color="danger">Failed to fetch tags: {versions.error}</Alert>
+        <TagFetchError message={versions.error} onRetry={() => void refreshFromRegistry()} />
       ) : null}
 
       {versions.loading && !versions.data ? <Spinner /> : null}
