@@ -1,6 +1,6 @@
 {
   "name": "signalk-updater-server",
-  "version": "0.6.24",
+  "version": "0.6.25",
   "private": true,
   "description": "Peer engine container for SignalK image lifecycle, version switching, and self-update",
   "type": "module",
