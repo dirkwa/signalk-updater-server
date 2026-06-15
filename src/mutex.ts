@@ -165,6 +165,51 @@ export async function forceClear(): Promise<void> {
   }
 }
 
+export type BootLockOutcome =
+  | { cleared: false; reason: 'no-lock' | 'fresh' }
+  | { cleared: true; lock: LockInfo; ageMs: number | null };
+
+/**
+ * Boot-time recovery: clear the operation lock IF it's stale. Called once
+ * at startup, before the server accepts requests, so an updater that
+ * restarts for any reason (crashloop, host reboot, a self-update that
+ * managed to fire) heals a lock orphaned by a process killed mid-operation
+ * — without waiting for the runtime stale-reclaim window or a manual rm.
+ *
+ * Crucially this only clears a STALE lock (age > STALE_LOCK_MS). A fresh
+ * lock is a real in-flight operation — possibly the doctor's, since the
+ * lock is shared — and must survive our boot. The reclaim uses the same
+ * atomic rename-to-claim as tryAcquire so a doctor that legitimately holds
+ * a fresh lock while we boot is never clobbered. Best-effort and never
+ * throws: a recovery step must not be the thing that stops boot.
+ */
+export async function releaseStaleLockAtBoot(): Promise<BootLockOutcome> {
+  try {
+    const lock = await readLock();
+    if (!lock) return { cleared: false, reason: 'no-lock' };
+    const age = lockAgeMs(lock);
+    // null age = unparseable startedAt; fail safe toward "leave it" so we
+    // never steal something we can't reason about.
+    if (age === null || age <= STALE_LOCK_MS) return { cleared: false, reason: 'fresh' };
+    // Atomic claim-then-drop: only the winner of the rename removes it, so
+    // a concurrently-booting doctor doesn't double-clear.
+    stealSeq += 1;
+    const claimPath = `${LOCK_PATH}.bootsteal.${process.pid}.${stealSeq}`;
+    try {
+      await rename(LOCK_PATH, claimPath);
+    } catch {
+      // Someone else (doctor) reclaimed/released first — nothing to do.
+      return { cleared: false, reason: 'fresh' };
+    }
+    await unlink(claimPath).catch(() => undefined);
+    return { cleared: true, lock, ageMs: age };
+  } catch {
+    // Any unexpected fs error: leave the lock and let boot proceed. The
+    // runtime stale-reclaim is still there as a backstop.
+    return { cleared: false, reason: 'no-lock' };
+  }
+}
+
 export async function writeLockInfo(info: LockInfo): Promise<void> {
   await writeAtomic(LOCK_PATH, JSON.stringify(info));
 }

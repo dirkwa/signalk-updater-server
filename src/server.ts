@@ -14,6 +14,7 @@ import { registerUpdateRoutes } from './routes/updates.js';
 import { registerLogStreamRoutes } from './routes/logs-stream.js';
 import { registerHardwareRoutes } from './routes/hardware.js';
 import { registerLockRoutes } from './routes/lock.js';
+import { releaseStaleLockAtBoot } from './mutex.js';
 import { startUpdateChecker } from './update-checker.js';
 
 // Built webapp directory inside the container image. The Vite build
@@ -29,6 +30,20 @@ export async function createServer(): Promise<FastifyInstance> {
       level: process.env.LOG_LEVEL ?? 'info',
     },
   });
+
+  // Boot-time recovery: clear a STALE operation lock before serving. A
+  // process killed mid-switch/-update (crashloop, host reboot) leaves the
+  // shared lock behind and 409s every future operation; this self-heals it
+  // on the next start instead of needing the runtime reclaim window or a
+  // manual rm. Only stale locks are cleared — a fresh one (possibly the
+  // doctor's, since the lock is shared) survives. Best-effort.
+  const bootLock = await releaseStaleLockAtBoot();
+  if (bootLock.cleared) {
+    app.log.warn(
+      { lock: bootLock.lock, ageMs: bootLock.ageMs },
+      'cleared a stale operation lock at boot',
+    );
+  }
 
   // API routes first so they take precedence over the static fallback.
   await registerHealthRoutes(app);
