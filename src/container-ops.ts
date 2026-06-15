@@ -3,14 +3,40 @@ import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { resolveRuntime, safe } from './podman/client.js';
 
+/** A single coarse pull-progress tick. Derived from dockerode's
+ *  followProgress event stream — `layers` is the count of distinct layer
+ *  ids seen, `current` the status line of the most recent event. Enough to
+ *  show "pull is alive and advancing" without parsing per-layer byte
+ *  counts. */
+export interface PullProgress {
+  layers: number;
+  current: string;
+}
+
+interface DockerProgressEvent {
+  id?: string;
+  status?: string;
+}
+
 /**
  * Pull an image via dockerode and wait for the streamed progress to finish.
- * Used by both the signalk-server switch flow and the doctor self-update —
- * the same registry / network / disk concerns apply to both.
+ * Used by the signalk-server switch flow, the doctor self-update, and the
+ * standalone pre-pull route — the same registry / network / disk concerns
+ * apply to all.
+ *
+ * `onProgress` (optional) is invoked on followProgress events with a coarse
+ * tick. The pre-pull route uses it to publish SSE progress so the UI shows
+ * the (multi-minute) pull advancing; the switch/doctor flows omit it (their
+ * own stage events already cover the pull). Throwing inside onProgress is
+ * swallowed so a UI hiccup can't fail the pull.
  */
-export async function pullImage(image: string): Promise<{ ok: boolean; error?: string }> {
+export async function pullImage(
+  image: string,
+  onProgress?: (p: PullProgress) => void,
+): Promise<{ ok: boolean; error?: string }> {
   const rt = await resolveRuntime();
   if (!rt) return { ok: false, error: 'runtime unreachable' };
+  const seenLayers = new Set<string>();
   const r = await safe(
     () =>
       new Promise<void>((resolve, reject) => {
@@ -20,8 +46,14 @@ export async function pullImage(image: string): Promise<{ ok: boolean; error?: s
           rt.client.modem.followProgress(
             stream,
             (e) => (e ? reject(e) : resolve()),
-            () => {
-              /* ignore progress events */
+            (event: DockerProgressEvent) => {
+              if (!onProgress) return;
+              if (event.id) seenLayers.add(event.id);
+              try {
+                onProgress({ layers: seenLayers.size, current: event.status ?? '' });
+              } catch {
+                // never let a progress-listener error abort the pull
+              }
             },
           );
         });

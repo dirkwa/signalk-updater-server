@@ -169,6 +169,11 @@ export function Versions() {
   stateRef.current = state;
   const updatesRef = useRef(updates);
   updatesRef.current = updates;
+  // So the SSE handler can clear the in-flight Pull spinner on the
+  // terminal event (a background pull streams over the same channel).
+  const pullingTagRef = useRef<string | null>(null);
+  const toastRef = useRef(toast);
+  toastRef.current = toast;
 
   // Open one persistent SSE channel so the progress card reflects any
   // in-flight switch, even one another browser kicked off. The broker
@@ -190,6 +195,20 @@ export function Versions() {
           void versionsRef.current.refresh();
           void stateRef.current.refresh();
           void updatesRef.current.refresh();
+          // A background pull streams over this same channel. If one was in
+          // flight from this tab, clear its spinner and report the outcome
+          // (the POST returned 202 immediately, so the result only arrives
+          // here, never on the request promise).
+          if (pullingTagRef.current !== null) {
+            const tag = pullingTagRef.current;
+            pullingTagRef.current = null;
+            setPullingTag(null);
+            if (parsed.stage === 'complete') {
+              toastRef.current.show(`Pulled ${tag}`, 'ok');
+            } else {
+              toastRef.current.show(`Pull failed: ${parsed.error ?? 'unknown error'}`, 'err', 8000);
+            }
+          }
         }
       } catch {
         // ignore malformed events; heartbeats arrive as `: heartbeat` and
@@ -238,17 +257,27 @@ export function Versions() {
   const doPull = useCallback(
     async (tag: string): Promise<void> => {
       setPullingTag(tag);
+      pullingTagRef.current = tag;
       try {
+        // Returns 202 immediately; the pull runs server-side and streams
+        // progress + the terminal result over the switch-progress SSE. The
+        // spinner is cleared and the outcome toasted by the SSE handler, NOT
+        // here — a full image pull takes minutes and the embedded proxy
+        // would 502 a blocking request. We only handle a synchronous
+        // dispatch failure (bad request / engine unreachable).
         await api('/api/versions/pull', { method: 'POST', body: { tag } });
-        await versions.refresh();
-        toast.show(`Pulled ${tag}`, 'ok');
+        toast.show(`Pulling ${tag}… (progress below)`, 'info');
       } catch (err) {
-        toast.show(`Pull failed: ${err instanceof Error ? err.message : String(err)}`, 'err', 8000);
-      } finally {
+        pullingTagRef.current = null;
         setPullingTag(null);
+        toast.show(
+          `Could not start pull: ${err instanceof Error ? err.message : String(err)}`,
+          'err',
+          8000,
+        );
       }
     },
-    [toast, versions],
+    [toast],
   );
 
   const doSwitch = useCallback(
