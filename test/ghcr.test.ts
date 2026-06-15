@@ -204,3 +204,38 @@ describe('listTags — bounded concurrency', () => {
     expect(maxInFlight).toBeGreaterThan(1);
   });
 });
+
+describe('listTags — transient registry failures classify as registry-unavailable', () => {
+  it('surfaces a token-endpoint 502 as a retryable registry-unavailable error', async () => {
+    // The token call is the FIRST GHCR request; a 502 there used to be
+    // swallowed to a generic "failed to obtain token" → 'unknown' →
+    // alarming "HTTP 502" in the UI. It must now classify as transient.
+    installFetchRouter([
+      {
+        match: (u) => u.includes('/token'),
+        respond: () => new Response('bad gateway', { status: 502 }),
+      },
+    ]);
+    const { listTags } = await import('../src/ghcr.js');
+    const r = await listTags('x/y', { force: true });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error('unreachable');
+    expect(r.error.kind).toBe('registry-unavailable');
+    expect(r.error.userMessage).toMatch(/temporarily unavailable|try again/i);
+  });
+
+  it('surfaces a tags/list 503 as registry-unavailable', async () => {
+    installFetchRouter([
+      { match: (u) => u.includes('/token'), respond: () => jsonResponse({ token: 't' }) },
+      {
+        match: (u) => u.includes('/tags/list'),
+        respond: () => new Response('unavailable', { status: 503 }),
+      },
+    ]);
+    const { listTags } = await import('../src/ghcr.js');
+    const r = await listTags('x/y', { force: true });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error('unreachable');
+    expect(r.error.kind).toBe('registry-unavailable');
+  });
+});

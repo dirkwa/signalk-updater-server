@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
 import { Versions } from './Versions';
 import { ToastProvider } from '../toast';
 import { ConfirmProvider } from '../confirm';
+import { StubEventSource } from '../../test-setup';
 import type { AvailableUpdates, CurrentState, VersionSettings, VersionsResponse } from '../types';
 
 // vi.restoreAllMocks() resets vi.fn spies but doesn't undo a direct
@@ -171,6 +172,7 @@ function renderVersions() {
 
 describe('Versions', () => {
   beforeEach(() => {
+    StubEventSource.instances = [];
     mockFetch({
       '/api/versions': sampleVersions,
       '/api/state': sampleState,
@@ -265,5 +267,56 @@ describe('Versions', () => {
     const btn = await screen.findByRole('button', { name: /update & restart/i });
     expect(btn).not.toBeDisabled();
     expect(screen.queryByText('In use')).not.toBeInTheDocument();
+  });
+
+  it('ignores doctor progress events (does not show a Switch-progress card)', async () => {
+    renderVersions();
+    await screen.findByText('stable');
+    const es = StubEventSource.instances.at(-1);
+    if (!es) throw new Error('expected an EventSource to be opened');
+    // A doctor update streams over the SAME broker. The Versions card is
+    // signalk-server-only and must ignore it (regression: it used to leak
+    // a "Switch progress … doctor … Complete" card here).
+    act(() => {
+      es.emit({
+        stage: 'complete',
+        target: 'doctor',
+        to: '0.7.17',
+        message: 'Updated signalk-doctor-server to 0.7.17',
+        at: new Date().toISOString(),
+      });
+    });
+    expect(screen.queryByText('Switch progress')).not.toBeInTheDocument();
+    expect(screen.queryByText(/signalk-doctor-server/i)).not.toBeInTheDocument();
+
+    // A signalk-server event DOES render the card.
+    act(() => {
+      es.emit({
+        stage: 'pulling',
+        target: 'signalk-server',
+        to: 'v2.27.0',
+        message: 'Pulling v2.27.0…',
+        at: new Date().toISOString(),
+      });
+    });
+    expect(await screen.findByText('Switch progress')).toBeInTheDocument();
+  });
+
+  it('treats an absent target as signalk-server (backward compat with pre-discriminator events)', async () => {
+    renderVersions();
+    await screen.findByText('stable');
+    const es = StubEventSource.instances.at(-1);
+    if (!es) throw new Error('expected an EventSource to be opened');
+    // Events published before the target discriminator existed have no
+    // target field — they must still render (default signalk-server).
+    act(() => {
+      es.emit({
+        stage: 'pulling',
+        to: 'v2.25.0',
+        message: 'Pulling v2.25.0…',
+        at: new Date().toISOString(),
+      });
+    });
+    expect(await screen.findByText('Switch progress')).toBeInTheDocument();
   });
 });

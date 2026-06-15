@@ -56,14 +56,17 @@ const MANIFEST_ACCEPT =
 
 async function getAnonToken(image: string): Promise<string | null> {
   const url = `https://ghcr.io/token?scope=repository:${image}:pull&service=ghcr.io`;
-  try {
-    const res = await fetch(url, { method: 'GET' });
-    if (!res.ok) return null;
-    const body = (await res.json()) as { token?: string };
-    return body.token ?? null;
-  } catch {
-    return null;
-  }
+  // Let the HTTP status / network error propagate (don't swallow to null):
+  // a 5xx/429 here is a transient registry blip and must reach
+  // categorizeError with its status string so it's classified as
+  // 'registry-unavailable' and the UI shows a calm "try again" — rather
+  // than collapsing to the generic "failed to obtain token" that lands as
+  // an alarming 'unknown'/HTTP 502. A 2xx response with no token field is
+  // the one genuine "couldn't get a token" case → null.
+  const res = await fetch(url, { method: 'GET' });
+  if (!res.ok) throw new Error(`token: HTTP ${res.status}`);
+  const body = (await res.json()) as { token?: string };
+  return body.token ?? null;
 }
 
 async function fetchTagList(image: string, token: string): Promise<string[]> {
