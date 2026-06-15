@@ -49,9 +49,18 @@ describe('withMutex / stale-lock reclaim', () => {
   it('rejects a second concurrent acquire with MutexBusyError', async () => {
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));
+    let entered!: () => void;
+    const held = new Promise<void>((r) => (entered = r));
     const first = withMutex('switch', async () => {
+      // Signal that the lock is actually acquired BEFORE we attempt the
+      // second one. tryAcquire is async, so without this the second
+      // withMutex can race ahead of the first lock's write and acquire it
+      // (the first lock isn't on disk yet) — which is exactly the
+      // ordering CI hit. Await `held` first to make the test deterministic.
+      entered();
       await gate;
     });
+    await held;
     await expect(withMutex('doctor-switch', async () => undefined)).rejects.toBeInstanceOf(
       MutexBusyError,
     );
