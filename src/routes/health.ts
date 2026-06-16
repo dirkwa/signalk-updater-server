@@ -38,11 +38,25 @@ export function getSelfVersion(): string {
   return cachedVersion;
 }
 
+// Memoized podman/docker daemon version. Like the runtime kind, the daemon
+// version is fixed for the life of the daemon, and `client.version()` is one
+// of the podman API calls that fans out `dpkg-query` per helper binary. The
+// /api/health poll runs every 15s from the webapp, so without this the
+// runtime-version chip cost a dpkg fan-out on every poll. Probe once, then
+// serve the cached string. Stays undefined (and re-probable) until the first
+// successful probe so a daemon that wasn't up at first poll still fills in.
+let cachedRuntimeVersion: string | undefined;
+let runtimeVersionProbed = false;
+
 async function probeRuntimeVersion(client: Docker): Promise<string | undefined> {
+  if (runtimeVersionProbed) return cachedRuntimeVersion;
   const r = await safe(async () => (await client.version()) as { Version?: string });
-  if (!r.ok) return undefined;
+  if (!r.ok) return undefined; // leave un-probed so a later poll retries
   const v = r.value;
-  return typeof v.Version === 'string' && v.Version.length > 0 ? v.Version : undefined;
+  cachedRuntimeVersion =
+    typeof v.Version === 'string' && v.Version.length > 0 ? v.Version : undefined;
+  runtimeVersionProbed = true;
+  return cachedRuntimeVersion;
 }
 
 export async function registerHealthRoutes(app: FastifyInstance): Promise<void> {
