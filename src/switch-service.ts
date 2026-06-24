@@ -248,7 +248,7 @@ async function doSwitch(input: SwitchInput): Promise<SwitchResult> {
   //    rolling tags, and the immediately-previous semver are protected; older
   //    versions are removed. Fire-and-forget — never block completion on GC.
   void pruneOldImagesFor(SIGNALK_IMAGE, 'signalk-server', {
-    protectTags: ['latest', 'dirkwa', 'master'],
+    protectTags: ['master'], // latest + dirkwa are protected by default
   });
 
   publishSwitchEvent({

@@ -84,7 +84,10 @@ export async function pruneOldImagesFor(
   log?: FastifyBaseLogger,
 ): Promise<RetentionResult> {
   const keep = opts.keep ?? 1;
-  const protectTags = new Set(opts.protectTags ?? []);
+  // Always protect the common rolling tags, even on a bare call: a default
+  // invocation must never be able to remove :latest / :dirkwa. Callers add
+  // engine-specific rolling tags (e.g. :master, :beta) on top.
+  const protectTags = new Set<string>(['latest', 'dirkwa', ...(opts.protectTags ?? [])]);
 
   const rt = await resolveRuntime();
   if (!rt) return EMPTY;

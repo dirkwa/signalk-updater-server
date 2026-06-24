@@ -195,10 +195,8 @@ async function doDoctorSwitch(input: DoctorSwitchInput): Promise<SwitchResult> {
   invalidateUpdatesCache();
 
   // 8. Reclaim superseded doctor images (running + :latest + previous semver
-  //    protected). Fire-and-forget — never block completion on GC.
-  void pruneOldImagesFor(DOCTOR_IMAGE, 'signalk-doctor-server', {
-    protectTags: ['latest'],
-  });
+  //    protected; :latest is a default-protected rolling tag). Fire-and-forget.
+  void pruneOldImagesFor(DOCTOR_IMAGE, 'signalk-doctor-server');
 
   emit({
     stage: 'complete',

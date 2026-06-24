@@ -183,6 +183,26 @@ describe('pruneOldImagesFor', () => {
     expect(r).toEqual({ removed: [], kept: [], skipped: [] });
   });
 
+  it('protects :latest and :dirkwa by default, even with no opts and no running container', async () => {
+    const removed: string[] = [];
+    const images: ImageRow[] = [
+      { Id: 'sha256:L', RepoTags: [`${PREFIX}:latest`], Created: 500 },
+      { Id: 'sha256:D', RepoTags: [`${PREFIX}:dirkwa`], Created: 480 },
+      { Id: 'sha256:OLD', RepoTags: [`${PREFIX}:0.6.20`], Created: 200 },
+    ];
+    mockResolveRuntime.mockResolvedValue({
+      client: makeClient(images, undefined, removed), // inspect throws, no opts
+    });
+
+    // Bare call — keep defaults to 1, protectTags defaults to {latest,dirkwa}.
+    const r = await pruneOldImagesFor(PREFIX, 'signalk-updater-server');
+
+    // latest + dirkwa never removed; keep=1 retains the single old semver too.
+    expect(r.removed).toEqual([]);
+    expect(removed).toEqual([]);
+    expect(r.kept).toEqual(expect.arrayContaining([`${PREFIX}:latest`, `${PREFIX}:dirkwa`]));
+  });
+
   it('matches bare and ghcr-prefixed repos, and leaves other repos untouched', async () => {
     const removed: string[] = [];
     const images: ImageRow[] = [
