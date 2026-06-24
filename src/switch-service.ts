@@ -6,6 +6,7 @@ import { preSwitchBackup, type BackupResult } from './backup.js';
 import { DEFAULT_HEALTH_TIMEOUT_MS, pollHealth, pullImage, trialRun } from './container-ops.js';
 import { publishSwitchEvent } from './switch-progress-broker.js';
 import { refreshDoctorDrift } from './drift-client.js';
+import { pruneOldImagesFor } from './image-retention.js';
 import { resolveSignalkHealthUrl } from './signalk-url-resolver.js';
 import type { SwitchResult } from './types.js';
 
@@ -242,6 +243,24 @@ async function doSwitch(input: SwitchInput): Promise<SwitchResult> {
   //    on a promise that swallows its own errors — never block the
   //    switch's completion path on a doctor-side hiccup.
   void refreshDoctorDrift();
+
+  // 9. Reclaim superseded signalk-server images. The just-switched image, the
+  //    rolling tags, and the immediately-previous semver are protected; older
+  //    versions are removed. Awaited (not fire-and-forget) so the rmi runs
+  //    INSIDE the withMutex('switch') lock wrapping this flow (CC-5) — a bare
+  //    void could let removal continue after the lock released. `.catch` keeps
+  //    it best-effort: a GC hiccup must never fail an otherwise-good switch.
+  // Protect the tag we just switched AWAY from explicitly: on a downgrade or a
+  // skipped-version switch the just-replaced image is the real rollback target,
+  // which is not necessarily the newest semver that the keep window would keep.
+  const previousTag = previousImage.startsWith(`${SIGNALK_IMAGE}:`)
+    ? previousImage.slice(SIGNALK_IMAGE.length + 1)
+    : undefined;
+  await pruneOldImagesFor(SIGNALK_IMAGE, 'signalk-server', {
+    // master + beta are channel heads (tagClassifier), not old semver images;
+    // latest + dirkwa are protected by default.
+    protectTags: ['master', 'beta', ...(previousTag ? [previousTag] : [])],
+  }).catch(() => undefined);
 
   publishSwitchEvent({
     stage: 'complete',

@@ -4,6 +4,7 @@ import { daemonReload, startUnit, stopUnitAndWait } from './dbus/systemd-user.js
 import { withMutex } from './mutex.js';
 import { DEFAULT_HEALTH_TIMEOUT_MS, pollHealth, pullImage, trialRun } from './container-ops.js';
 import { invalidate as invalidateUpdatesCache } from './update-checker.js';
+import { pruneOldImagesFor } from './image-retention.js';
 import { resolveDoctorHealthUrl } from './signalk-url-resolver.js';
 import { publishSwitchEvent } from './switch-progress-broker.js';
 import type { SwitchProgressEvent, SwitchResult } from './types.js';
@@ -192,6 +193,18 @@ async function doDoctorSwitch(input: DoctorSwitchInput): Promise<SwitchResult> {
   // racing against a stale "updateAvailable: true" from before the
   // switch. Fire-and-forget; the refresh happens in the background.
   invalidateUpdatesCache();
+
+  // 8. Reclaim superseded doctor images (running + :latest + previous semver
+  //    protected; :latest is a default-protected rolling tag). Awaited inside
+  //    the withMutex('doctor-switch') lock (CC-5); `.catch` keeps it best-effort.
+  //    Protect the just-replaced tag explicitly — on a downgrade/skip it's the
+  //    real rollback target, not necessarily the newest semver the keep keeps.
+  const previousTag = previousImage.startsWith(`${DOCTOR_IMAGE}:`)
+    ? previousImage.slice(DOCTOR_IMAGE.length + 1)
+    : undefined;
+  await pruneOldImagesFor(DOCTOR_IMAGE, 'signalk-doctor-server', {
+    protectTags: previousTag ? [previousTag] : [],
+  }).catch(() => undefined);
 
   emit({
     stage: 'complete',

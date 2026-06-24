@@ -1,5 +1,8 @@
 import { setDefaultAutoSelectFamilyAttemptTimeout } from 'node:net';
 import { createServer } from './server.js';
+import { pruneOldImagesFor } from './image-retention.js';
+import { withMutex } from './mutex.js';
+import { SELF_IMAGE } from './routes/self.js';
 
 // Happy-Eyeballs (RFC 8305) attempt timeout for ALL outbound connections,
 // including global fetch() — which is how src/ghcr.ts talks to ghcr.io.
@@ -34,6 +37,22 @@ async function main(): Promise<void> {
     app.log.error(err);
     process.exit(1);
   }
+
+  // Reap old updater-server images on boot. A self-update can't prune inline
+  // (the process is mid-restart, still executing from the OLD image's id); by
+  // now the new self is confirmed running, so its id is protected and the
+  // superseded version beyond the rollback keep is reclaimed.
+  //
+  // Image removal is a mutating op, so it goes through the single-writer mutex
+  // (CC-5) under the 'self-update' label — boot pruning is the deferred tail of
+  // a self-update. If another flow (switch / hardware-apply) holds the lock at
+  // boot, withMutex throws MutexBusyError; swallow it and let the next boot try.
+  // Fire-and-forget — never block startup on GC.
+  void withMutex('self-update', () =>
+    pruneOldImagesFor(SELF_IMAGE, 'signalk-updater-server', { protectTags: ['beta'] }, app.log),
+  ).catch((err: unknown) => {
+    app.log.debug({ err }, 'boot image-retention skipped (lock busy or unavailable)');
+  });
 }
 
 void main();
