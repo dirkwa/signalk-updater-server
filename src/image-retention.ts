@@ -53,7 +53,11 @@ export interface RetentionResult {
   skipped: string[];
 }
 
-const EMPTY: RetentionResult = { removed: [], kept: [], skipped: [] };
+/** A fresh empty result. Not a shared singleton: the arrays are mutable, so a
+ *  caller appending to a returned value must never contaminate a later no-op. */
+function emptyResult(): RetentionResult {
+  return { removed: [], kept: [], skipped: [] };
+}
 
 /** A locally-present `<repo>:<tag>` with its resolved image id and age. */
 interface TaggedImage {
@@ -105,10 +109,10 @@ export async function pruneOldImagesFor(
   const protectTags = new Set<string>(['latest', 'dirkwa', ...(opts.protectTags ?? [])]);
 
   const rt = await resolveRuntime();
-  if (!rt) return EMPTY;
+  if (!rt) return emptyResult();
 
   const listed = await safe(() => rt.client.listImages({}));
-  if (!listed.ok) return EMPTY;
+  if (!listed.ok) return emptyResult();
 
   // Collect this repo's locally-present tagged images (drop <none>).
   const tagged: TaggedImage[] = [];
@@ -124,7 +128,7 @@ export async function pruneOldImagesFor(
       tagged.push({ repoTag, tag, id: img.Id, created: img.Created });
     }
   }
-  if (tagged.length === 0) return EMPTY;
+  if (tagged.length === 0) return emptyResult();
 
   // Build the protect-by-ID set. Protecting by ID (never by tag string) is what
   // makes untagging safe when several tags share one image id.
