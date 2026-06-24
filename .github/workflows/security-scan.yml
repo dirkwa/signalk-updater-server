@@ -24,6 +24,12 @@ on:
     - cron: '0 0 * * 1'
   workflow_dispatch:
 
+# A manual dispatch can overlap the weekly run; both upload the same
+# trivy-docker SARIF category, so cancel an older in-progress scan.
+concurrency:
+  group: security-scan-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   security-events: write
@@ -63,8 +69,11 @@ jobs:
           severity: 'HIGH,CRITICAL'
 
       - name: Upload Trivy scan results to GitHub Security tab
+        # always() so a scan that finds CVEs (non-zero) still uploads, but
+        # guard on the file existing so a build/scan failure surfaces its own
+        # error instead of failing here on a missing SARIF.
+        if: ${{ always() && hashFiles('trivy-results.sarif') != '' }}
         uses: github/codeql-action/upload-sarif@v4
-        if: always()
         with:
           sarif_file: 'trivy-results.sarif'
           category: 'trivy-docker'
