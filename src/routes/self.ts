@@ -9,7 +9,9 @@ import { resolveRuntime, safe } from '../podman/client.js';
 import { getSelfVersion } from './health.js';
 import { invalidate as invalidateUpdatesCache } from '../update-checker.js';
 
-const SELF_IMAGE = process.env.SELF_IMAGE ?? 'ghcr.io/dirkwa/signalk-updater-server';
+/** Our own image ref. Exported so the boot-time image prune in index.ts uses
+ *  the same value and the two can't drift. */
+export const SELF_IMAGE = process.env.SELF_IMAGE ?? 'ghcr.io/dirkwa/signalk-updater-server';
 const SELF_QUADLET = 'signalk-updater-server.container';
 const SELF_UNIT = 'signalk-updater-server.service';
 

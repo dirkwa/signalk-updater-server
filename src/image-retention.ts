@@ -35,10 +35,9 @@ interface ImageInfo {
   Created: number;
 }
 
-/** dockerode container inspect() — only the image-id fields we read. */
+/** dockerode container inspect() — only the image-id field we read. */
 interface ContainerInspect {
   Image?: string;
-  ImageName?: string;
 }
 
 export interface RetentionOptions {
@@ -92,7 +91,14 @@ export async function pruneOldImagesFor(
   opts: RetentionOptions = {},
   log?: FastifyBaseLogger,
 ): Promise<RetentionResult> {
-  const keep = opts.keep ?? 1;
+  // Guard keep: a negative or non-integer value would skip the rollback-keep
+  // loop and make every non-running/non-rolling semver eligible for deletion.
+  // Fall back to the default rather than trusting a bad caller.
+  let keep = opts.keep ?? 1;
+  if (!Number.isSafeInteger(keep) || keep < 0) {
+    log?.warn({ keep }, 'image-retention: invalid keep, falling back to 1');
+    keep = 1;
+  }
   // Always protect the common rolling tags, even on a bare call: a default
   // invocation must never be able to remove :latest / :dirkwa. Callers add
   // engine-specific rolling tags (e.g. :master, :beta) on top.
@@ -124,15 +130,19 @@ export async function pruneOldImagesFor(
   // makes untagging safe when several tags share one image id.
   const protectedIds = new Set<string>();
 
-  // (a) the running container's image id.
+  // (a) the running container's image id. Only `.Image` (the resolved sha256
+  //     id) can match TaggedImage.id; `.ImageName` is a ref string and would
+  //     never match, so it's not a usable fallback. If inspect fails or .Image
+  //     is absent, we degrade gracefully — the running image is also covered by
+  //     a rolling tag (protected above) or the keep window, so cleanup still
+  //     runs rather than disabling itself on a transient inspect glitch.
   const inspected = await safe(() => rt.client.getContainer(runningContainer).inspect());
   if (inspected.ok) {
     // NOTE: this id is used ONLY as a protect-set membership key — never parsed
     // for a version string (runtime-version.ts owns RuntimeIdentity). Reading
     // the id here does not reintroduce the inspect().Image version anti-pattern.
     const info = inspected.value as unknown as ContainerInspect;
-    const runId = info.Image ?? info.ImageName;
-    if (runId) protectedIds.add(runId);
+    if (info.Image) protectedIds.add(info.Image);
   }
 
   // (b) the ids that rolling tags resolve to.

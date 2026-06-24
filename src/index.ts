@@ -2,9 +2,7 @@ import { setDefaultAutoSelectFamilyAttemptTimeout } from 'node:net';
 import { createServer } from './server.js';
 import { pruneOldImagesFor } from './image-retention.js';
 import { withMutex } from './mutex.js';
-
-// Full ghcr ref of our own image — same env-driven default as routes/self.ts.
-const SELF_IMAGE = process.env.SELF_IMAGE ?? 'ghcr.io/dirkwa/signalk-updater-server';
+import { SELF_IMAGE } from './routes/self.js';
 
 // Happy-Eyeballs (RFC 8305) attempt timeout for ALL outbound connections,
 // including global fetch() — which is how src/ghcr.ts talks to ghcr.io.

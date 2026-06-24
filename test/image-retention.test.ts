@@ -249,4 +249,23 @@ describe('pruneOldImagesFor', () => {
       expect.arrayContaining([`${PREFIX}:latest`, `${PREFIX}:0.6.27`, `${PREFIX}:0.6.25`]),
     );
   });
+
+  it('an invalid keep (negative) falls back to 1 rather than reaping all rollback versions', async () => {
+    const removed: string[] = [];
+    const images: ImageRow[] = [
+      { Id: 'sha256:RUN', RepoTags: [`${PREFIX}:0.6.27`, `${PREFIX}:latest`], Created: 500 },
+      { Id: 'sha256:PREV', RepoTags: [`${PREFIX}:0.6.25`], Created: 400 },
+      { Id: 'sha256:OLD', RepoTags: [`${PREFIX}:0.6.20`], Created: 200 },
+    ];
+    mockResolveRuntime.mockResolvedValue({
+      client: makeClient(images, 'sha256:RUN', removed),
+    });
+
+    // keep=-1 would skip the rollback loop entirely; the guard clamps it to 1,
+    // so 0.6.25 (the previous version) is still protected.
+    const r = await pruneOldImagesFor(PREFIX, 'signalk-updater-server', { keep: -1 });
+
+    expect(r.removed).toEqual([`${PREFIX}:0.6.20`]);
+    expect(r.kept).toEqual(expect.arrayContaining([`${PREFIX}:0.6.25`]));
+  });
 });

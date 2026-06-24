@@ -251,7 +251,9 @@ async function doSwitch(input: SwitchInput): Promise<SwitchResult> {
   //    void could let removal continue after the lock released. `.catch` keeps
   //    it best-effort: a GC hiccup must never fail an otherwise-good switch.
   await pruneOldImagesFor(SIGNALK_IMAGE, 'signalk-server', {
-    protectTags: ['master'], // latest + dirkwa are protected by default
+    // master + beta are channel heads (tagClassifier), not old semver images;
+    // latest + dirkwa are protected by default.
+    protectTags: ['master', 'beta'],
   }).catch(() => undefined);
 
   publishSwitchEvent({
