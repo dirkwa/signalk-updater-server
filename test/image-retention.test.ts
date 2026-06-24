@@ -250,6 +250,34 @@ describe('pruneOldImagesFor', () => {
     );
   });
 
+  it('an explicit protectTag keeps a non-newest version (the downgrade rollback target)', async () => {
+    const removed: string[] = [];
+    // Running 0.6.25 (a DOWNGRADE), but 0.6.30 sits locally unran. The just-
+    // replaced 0.6.27 is the rollback target — keep=1 alone would keep 0.6.30
+    // (newest) and delete 0.6.27. Passing 0.6.27 as a protectTag saves it.
+    const images: ImageRow[] = [
+      { Id: 'sha256:NEWEST', RepoTags: [`${PREFIX}:0.6.30`], Created: 600 },
+      { Id: 'sha256:PREV', RepoTags: [`${PREFIX}:0.6.27`], Created: 500 },
+      { Id: 'sha256:RUN', RepoTags: [`${PREFIX}:0.6.25`, `${PREFIX}:latest`], Created: 480 },
+      { Id: 'sha256:OLD', RepoTags: [`${PREFIX}:0.6.20`], Created: 200 },
+    ];
+    mockResolveRuntime.mockResolvedValue({
+      client: makeClient(images, 'sha256:RUN', removed),
+    });
+
+    const r = await pruneOldImagesFor(PREFIX, 'signalk-updater-server', {
+      keep: 1,
+      protectTags: ['0.6.27'], // the just-replaced tag
+    });
+
+    // Running (0.6.25/latest) protected; 0.6.27 protected explicitly; keep=1
+    // protects newest unprotected semver (0.6.30); only 0.6.20 removed.
+    expect(r.removed).toEqual([`${PREFIX}:0.6.20`]);
+    expect(r.kept).toEqual(
+      expect.arrayContaining([`${PREFIX}:0.6.27`, `${PREFIX}:0.6.30`, `${PREFIX}:0.6.25`]),
+    );
+  });
+
   it('an invalid keep (negative) falls back to 1 rather than reaping all rollback versions', async () => {
     const removed: string[] = [];
     const images: ImageRow[] = [

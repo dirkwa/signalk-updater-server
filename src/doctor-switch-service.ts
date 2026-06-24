@@ -197,7 +197,14 @@ async function doDoctorSwitch(input: DoctorSwitchInput): Promise<SwitchResult> {
   // 8. Reclaim superseded doctor images (running + :latest + previous semver
   //    protected; :latest is a default-protected rolling tag). Awaited inside
   //    the withMutex('doctor-switch') lock (CC-5); `.catch` keeps it best-effort.
-  await pruneOldImagesFor(DOCTOR_IMAGE, 'signalk-doctor-server').catch(() => undefined);
+  //    Protect the just-replaced tag explicitly — on a downgrade/skip it's the
+  //    real rollback target, not necessarily the newest semver the keep keeps.
+  const previousTag = previousImage.startsWith(`${DOCTOR_IMAGE}:`)
+    ? previousImage.slice(DOCTOR_IMAGE.length + 1)
+    : undefined;
+  await pruneOldImagesFor(DOCTOR_IMAGE, 'signalk-doctor-server', {
+    protectTags: previousTag ? [previousTag] : [],
+  }).catch(() => undefined);
 
   emit({
     stage: 'complete',

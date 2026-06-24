@@ -250,10 +250,16 @@ async function doSwitch(input: SwitchInput): Promise<SwitchResult> {
   //    INSIDE the withMutex('switch') lock wrapping this flow (CC-5) — a bare
   //    void could let removal continue after the lock released. `.catch` keeps
   //    it best-effort: a GC hiccup must never fail an otherwise-good switch.
+  // Protect the tag we just switched AWAY from explicitly: on a downgrade or a
+  // skipped-version switch the just-replaced image is the real rollback target,
+  // which is not necessarily the newest semver that the keep window would keep.
+  const previousTag = previousImage.startsWith(`${SIGNALK_IMAGE}:`)
+    ? previousImage.slice(SIGNALK_IMAGE.length + 1)
+    : undefined;
   await pruneOldImagesFor(SIGNALK_IMAGE, 'signalk-server', {
     // master + beta are channel heads (tagClassifier), not old semver images;
     // latest + dirkwa are protected by default.
-    protectTags: ['master', 'beta'],
+    protectTags: ['master', 'beta', ...(previousTag ? [previousTag] : [])],
   }).catch(() => undefined);
 
   publishSwitchEvent({
