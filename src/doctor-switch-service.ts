@@ -195,8 +195,9 @@ async function doDoctorSwitch(input: DoctorSwitchInput): Promise<SwitchResult> {
   invalidateUpdatesCache();
 
   // 8. Reclaim superseded doctor images (running + :latest + previous semver
-  //    protected; :latest is a default-protected rolling tag). Fire-and-forget.
-  void pruneOldImagesFor(DOCTOR_IMAGE, 'signalk-doctor-server');
+  //    protected; :latest is a default-protected rolling tag). Awaited inside
+  //    the withMutex('doctor-switch') lock (CC-5); `.catch` keeps it best-effort.
+  await pruneOldImagesFor(DOCTOR_IMAGE, 'signalk-doctor-server').catch(() => undefined);
 
   emit({
     stage: 'complete',

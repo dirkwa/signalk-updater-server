@@ -246,10 +246,13 @@ async function doSwitch(input: SwitchInput): Promise<SwitchResult> {
 
   // 9. Reclaim superseded signalk-server images. The just-switched image, the
   //    rolling tags, and the immediately-previous semver are protected; older
-  //    versions are removed. Fire-and-forget — never block completion on GC.
-  void pruneOldImagesFor(SIGNALK_IMAGE, 'signalk-server', {
+  //    versions are removed. Awaited (not fire-and-forget) so the rmi runs
+  //    INSIDE the withMutex('switch') lock wrapping this flow (CC-5) — a bare
+  //    void could let removal continue after the lock released. `.catch` keeps
+  //    it best-effort: a GC hiccup must never fail an otherwise-good switch.
+  await pruneOldImagesFor(SIGNALK_IMAGE, 'signalk-server', {
     protectTags: ['master'], // latest + dirkwa are protected by default
-  });
+  }).catch(() => undefined);
 
   publishSwitchEvent({
     stage: 'complete',

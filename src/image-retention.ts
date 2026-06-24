@@ -64,7 +64,12 @@ interface TaggedImage {
   created: number;
 }
 
-/** Does this RepoTag's repo half match the prefix (bare or ghcr-prefixed)? */
+/**
+ * Does this RepoTag's repo half match the prefix? Matches whether the local
+ * RepoTag carries the `ghcr.io/` registry host or not, and accepts the prefix
+ * in either form — so a fully-qualified prefix still matches the bare local
+ * tag podman sometimes stores, and vice-versa.
+ */
 function repoMatches(repo: string, prefix: string): boolean {
   const bare = prefix.replace(/^ghcr\.io\//, '');
   return repo === prefix || repo === bare || repo === `ghcr.io/${bare}`;
@@ -74,7 +79,11 @@ function repoMatches(repo: string, prefix: string): boolean {
  * Remove old tagged images under `repoPrefix`, keeping the running image, the
  * rolling tags, and the `keep` most-recent semver versions.
  *
- * @param repoPrefix       e.g. 'ghcr.io/dirkwa/signalk-updater-server'
+ * @param repoPrefix       the image repo, fully-qualified — e.g.
+ *                         'ghcr.io/dirkwa/signalk-updater-server'. Pass the
+ *                         SIGNALK_IMAGE / DOCTOR_IMAGE / SELF_IMAGE const (all
+ *                         carry the ghcr.io host); `repoMatches` also accepts a
+ *                         bare prefix, but the full ref is the convention.
  * @param runningContainer container whose image must never be removed, e.g. 'signalk-server'
  */
 export async function pruneOldImagesFor(
