@@ -6,6 +6,7 @@ import { preSwitchBackup, type BackupResult } from './backup.js';
 import { DEFAULT_HEALTH_TIMEOUT_MS, pollHealth, pullImage, trialRun } from './container-ops.js';
 import { publishSwitchEvent } from './switch-progress-broker.js';
 import { refreshDoctorDrift } from './drift-client.js';
+import { pruneOldImagesFor } from './image-retention.js';
 import { resolveSignalkHealthUrl } from './signalk-url-resolver.js';
 import type { SwitchResult } from './types.js';
 
@@ -242,6 +243,13 @@ async function doSwitch(input: SwitchInput): Promise<SwitchResult> {
   //    on a promise that swallows its own errors — never block the
   //    switch's completion path on a doctor-side hiccup.
   void refreshDoctorDrift();
+
+  // 9. Reclaim superseded signalk-server images. The just-switched image, the
+  //    rolling tags, and the immediately-previous semver are protected; older
+  //    versions are removed. Fire-and-forget — never block completion on GC.
+  void pruneOldImagesFor(SIGNALK_IMAGE, 'signalk-server', {
+    protectTags: ['latest', 'dirkwa', 'master'],
+  });
 
   publishSwitchEvent({
     stage: 'complete',

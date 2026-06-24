@@ -4,6 +4,7 @@ import { daemonReload, startUnit, stopUnitAndWait } from './dbus/systemd-user.js
 import { withMutex } from './mutex.js';
 import { DEFAULT_HEALTH_TIMEOUT_MS, pollHealth, pullImage, trialRun } from './container-ops.js';
 import { invalidate as invalidateUpdatesCache } from './update-checker.js';
+import { pruneOldImagesFor } from './image-retention.js';
 import { resolveDoctorHealthUrl } from './signalk-url-resolver.js';
 import { publishSwitchEvent } from './switch-progress-broker.js';
 import type { SwitchProgressEvent, SwitchResult } from './types.js';
@@ -192,6 +193,12 @@ async function doDoctorSwitch(input: DoctorSwitchInput): Promise<SwitchResult> {
   // racing against a stale "updateAvailable: true" from before the
   // switch. Fire-and-forget; the refresh happens in the background.
   invalidateUpdatesCache();
+
+  // 8. Reclaim superseded doctor images (running + :latest + previous semver
+  //    protected). Fire-and-forget — never block completion on GC.
+  void pruneOldImagesFor(DOCTOR_IMAGE, 'signalk-doctor-server', {
+    protectTags: ['latest'],
+  });
 
   emit({
     stage: 'complete',
