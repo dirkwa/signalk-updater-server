@@ -6,7 +6,9 @@ export type { LockInfo };
 
 // The operations that take the lock. Kept here (mutex's concern), and
 // must stay in sync with LockInfo.operation's union in types.ts (the wire
-// shape mirrored by the webapp).
+// shape mirrored by the webapp). `pause` covers both signalk pause and
+// resume — both rewrite signalk-server.container, so they serialize against
+// switches like every other Quadlet mutation.
 export type Operation = LockInfo['operation'];
 
 const DATA_DIR = process.env.DATA_DIR ?? '/data';
