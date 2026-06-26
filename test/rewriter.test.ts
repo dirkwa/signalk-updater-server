@@ -19,9 +19,7 @@ RestartSec=10
 `;
 
 // Canonical engine Quadlet shape (CC-4: Restart=on-failure + start-limit guard;
-// Restart=always is banned). The real signalk-server.container has a documented
-// Restart=always exception, but the fixture models the default so it doesn't
-// contradict the repo's required output shape.
+// Restart=always is banned).
 const QUADLET_WITH_INSTALL = `[Container]
 Image=ghcr.io/dirkwa/signalk-server:dirkwa
 ContainerName=signalk-server

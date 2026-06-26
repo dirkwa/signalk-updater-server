@@ -8,8 +8,9 @@ import {
   stopUnitAndWait,
 } from '../dbus/systemd-user.js';
 import { setQuadletBootStart } from '../quadlet/rewriter.js';
-import { withMutex } from '../mutex.js';
+import { withMutex, MutexBusyError } from '../mutex.js';
 import { requireToken } from '../auth.js';
+import type { FastifyReply } from 'fastify';
 
 type Op = 'start' | 'stop' | 'restart';
 
@@ -97,6 +98,27 @@ async function resume(): Promise<{ ok: boolean; error?: string; noop?: true }> {
   return { ok: true };
 }
 
+// Run a mutex-guarded lifecycle op and shape the HTTP response. Mirrors the
+// other mutating routes (switch/doctor/hardware): a busy lock is a 409 with the
+// `{ error, lock }` shape (not a 500), and a failed op is a 502.
+async function runGuarded(
+  reply: FastifyReply,
+  fn: () => Promise<{ ok: boolean; error?: string; noop?: true }>,
+): Promise<unknown> {
+  try {
+    const result = await withMutex('pause', fn);
+    if (!result.ok) reply.code(502);
+    return result;
+  } catch (err) {
+    if (err instanceof MutexBusyError) {
+      reply.code(409);
+      return { error: err.message, lock: err.lock };
+    }
+    reply.code(500);
+    return { error: err instanceof Error ? err.message : 'unknown error' };
+  }
+}
+
 export async function registerLifecycleRoutes(app: FastifyInstance): Promise<void> {
   for (const op of ['start', 'stop', 'restart'] as const) {
     app.post(`/api/signalk/${op}`, { preHandler: requireToken }, async (_req, reply) => {
@@ -106,15 +128,11 @@ export async function registerLifecycleRoutes(app: FastifyInstance): Promise<voi
     });
   }
 
-  app.post('/api/signalk/pause', { preHandler: requireToken }, async (_req, reply) => {
-    const result = await withMutex('pause', pause);
-    if (!result.ok) reply.code(502);
-    return result;
-  });
+  app.post('/api/signalk/pause', { preHandler: requireToken }, (_req, reply) =>
+    runGuarded(reply, pause),
+  );
 
-  app.post('/api/signalk/resume', { preHandler: requireToken }, async (_req, reply) => {
-    const result = await withMutex('pause', resume);
-    if (!result.ok) reply.code(502);
-    return result;
-  });
+  app.post('/api/signalk/resume', { preHandler: requireToken }, (_req, reply) =>
+    runGuarded(reply, resume),
+  );
 }
