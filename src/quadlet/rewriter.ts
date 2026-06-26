@@ -113,6 +113,35 @@ export async function rewriteQuadletImage(
   return { snapshotPath, previousImage: previous };
 }
 
+/**
+ * Read a Quadlet, snapshot it (CC-1), apply a pure `transform` to its body, and
+ * atomically write the result + prune snapshots. The single sanctioned path for
+ * code that needs to mutate a Quadlet body it can't express as an image/boot
+ * tweak (e.g. the charts CHARTS-block splice). Returns the PRE-write body so the
+ * caller can roll back with `restoreQuadletBody` if a downstream step (restart /
+ * health) fails.
+ */
+export async function rewriteQuadletBody(
+  quadletName: string,
+  transform: (body: string) => string,
+): Promise<{ snapshotPath: string; original: string }> {
+  const filePath = join(QUADLET_DIR, quadletName);
+  const original = await readQuadlet(quadletName);
+  const snapshotPath = await snapshotQuadlet(quadletName);
+  await writeAtomic(filePath, transform(original));
+  await pruneSnapshots(quadletName);
+  return { snapshotPath, original };
+}
+
+/**
+ * Restore a Quadlet body verbatim (no snapshot — used by rollback paths that
+ * already snapshotted on the forward write). Keeps the only-rewriter-writes-
+ * Quadlets invariant intact for rollback too.
+ */
+export async function restoreQuadletBody(quadletName: string, body: string): Promise<void> {
+  await writeAtomic(join(QUADLET_DIR, quadletName), body);
+}
+
 // Marker the updater stamps onto the boot-start line it disables, so a later
 // resume can find and restore exactly the line it commented out (and never
 // touch a user-authored WantedBy). Quadlet's generator only honours the

@@ -13,6 +13,7 @@ import { registerDoctorRoutes } from './routes/doctor.js';
 import { registerUpdateRoutes } from './routes/updates.js';
 import { registerLogStreamRoutes } from './routes/logs-stream.js';
 import { registerHardwareRoutes } from './routes/hardware.js';
+import { registerChartsRoutes } from './routes/charts.js';
 import { registerLockRoutes } from './routes/lock.js';
 import { releaseStaleLockAtBoot } from './mutex.js';
 import { startUpdateChecker } from './update-checker.js';
@@ -57,6 +58,7 @@ export async function createServer(): Promise<FastifyInstance> {
   await registerUpdateRoutes(app);
   await registerLogStreamRoutes(app);
   await registerHardwareRoutes(app);
+  await registerChartsRoutes(app);
   await registerLockRoutes(app);
 
   // Boot the daily GHCR check. Runs once immediately so the
