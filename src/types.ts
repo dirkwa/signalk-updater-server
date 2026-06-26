@@ -267,7 +267,14 @@ export interface SwitchProgressEvent {
  *  single shared definition the webapp can mirror). */
 export interface LockInfo {
   owner: 'updater' | 'doctor';
-  operation: 'switch' | 'rollback' | 'self-update' | 'doctor-switch' | 'hardware-apply' | 'recover';
+  operation:
+    | 'switch'
+    | 'rollback'
+    | 'self-update'
+    | 'doctor-switch'
+    | 'hardware-apply'
+    | 'recover'
+    | 'pause';
   startedAt: string;
   pid?: number;
 }

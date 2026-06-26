@@ -70,7 +70,14 @@ export interface CurrentState {
 // shape. Drives the stale-lock alert + Clear control on the Dashboard.
 export interface LockInfo {
   owner: 'updater' | 'doctor';
-  operation: 'switch' | 'rollback' | 'self-update' | 'doctor-switch' | 'hardware-apply' | 'recover';
+  operation:
+    | 'switch'
+    | 'rollback'
+    | 'self-update'
+    | 'doctor-switch'
+    | 'hardware-apply'
+    | 'recover'
+    | 'pause';
   startedAt: string;
   pid?: number;
 }

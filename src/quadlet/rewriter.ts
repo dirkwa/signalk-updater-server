@@ -113,6 +113,108 @@ export async function rewriteQuadletImage(
   return { snapshotPath, previousImage: previous };
 }
 
+// Marker the updater stamps onto the boot-start line it disables, so a later
+// resume can find and restore exactly the line it commented out (and never
+// touch a user-authored WantedBy). Quadlet's generator only honours the
+// [Install] section's WantedBy/RequiredBy/Alias keys to decide boot-start
+// (podman-systemd.unit(5): "only the Alias, WantedBy and RequiredBy keys are
+// supported"), so commenting the WantedBy line out removes the default.target
+// wants symlink the generator would otherwise create — and it stays removed
+// across daemon-reload because the unit is regenerated from this (rewritten)
+// source every time. That is what makes a `signalk stop` durable across reboot
+// without ever touching systemd enablement on a generated unit (which `disable`
+// can't durably do and `mask` is denied for).
+const BOOT_START_MARKER = '#SK-PAUSED# ';
+
+// Match a WantedBy= line (active or already-marked). Only meaningful INSIDE the
+// [Install] section — the generator ignores WantedBy= anywhere else — so the
+// loop below gates this on section tracking. We only ever write one
+// (default.target) but tolerate a hand-edited multi-target line by commenting
+// the whole line as a unit.
+const WANTED_BY_RE = /^(\s*)(#SK-PAUSED#\s)?\s*(WantedBy\s*=.*)$/;
+
+// A bare `[Section]` header line. Used to know when we're inside [Install].
+const SECTION_RE = /^\s*\[([^\]]+)\]\s*$/;
+
+/**
+ * Toggle whether this Quadlet starts at boot, by commenting / uncommenting its
+ * `[Install] WantedBy=` line with an updater-owned marker.
+ *
+ * - `enabled: false` (pause): prefix the active `[Install] WantedBy=` line with
+ *   `#SK-PAUSED# ` so the generator no longer wires the unit into
+ *   `default.target`. No-op if it's already marked/commented.
+ * - `enabled: true` (resume): strip the marker to restore the original line.
+ *   No-op if no marked line is present.
+ *
+ * ONLY the `WantedBy=` inside `[Install]` is touched: podman-systemd.unit(5)
+ * honours WantedBy/RequiredBy/Alias only in `[Install]` to decide boot-start, so
+ * a stray `WantedBy=` in another section is not a boot lever and must be left
+ * alone — toggling it would let resume() falsely report success while the unit
+ * stays unwired.
+ *
+ * Idempotent and reversible. Returns `changed: false` when the file is already
+ * in the requested state (so callers can avoid a needless snapshot + reload).
+ * Throws only when enabling and there is no `[Install] WantedBy=` line at all to
+ * restore (a malformed Quadlet the updater never wrote).
+ */
+export function toggleBootStart(
+  body: string,
+  enabled: boolean,
+): { body: string; changed: boolean } {
+  const lines = body.split('\n');
+  let changed = false;
+  let sawWantedBy = false;
+  let inInstall = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line === undefined) continue;
+    const section = line.match(SECTION_RE);
+    if (section) {
+      inInstall = section[1] === 'Install';
+      continue;
+    }
+    if (!inInstall) continue;
+    const m = line.match(WANTED_BY_RE);
+    if (!m) continue;
+    const indent = m[1] ?? '';
+    const isMarked = m[2] !== undefined;
+    const keyValue = m[3] ?? '';
+    sawWantedBy = true;
+    if (!enabled && !isMarked) {
+      lines[i] = `${indent}${BOOT_START_MARKER}${keyValue}`;
+      changed = true;
+    } else if (enabled && isMarked) {
+      lines[i] = `${indent}${keyValue}`;
+      changed = true;
+    }
+  }
+  if (enabled && !sawWantedBy) {
+    throw new Error('WantedBy= line not found in Quadlet [Install] section');
+  }
+  return { body: lines.join('\n'), changed };
+}
+
+/**
+ * Snapshot-then-rewrite the named Quadlet to enable/disable boot-start
+ * (CC-1: snapshot first, atomic write, keep last 10). Mirrors
+ * `rewriteQuadletImage`. Skips the write (and snapshot) when already in the
+ * requested state. The caller still owns the daemon-reload + stop/start; this
+ * only edits the file on disk.
+ */
+export async function setQuadletBootStart(
+  quadletName: string,
+  enabled: boolean,
+): Promise<{ snapshotPath: string | null; changed: boolean }> {
+  const filePath = join(QUADLET_DIR, quadletName);
+  const original = await readQuadlet(quadletName);
+  const { body, changed } = toggleBootStart(original, enabled);
+  if (!changed) return { snapshotPath: null, changed: false };
+  const snapshotPath = await snapshotQuadlet(quadletName);
+  await writeAtomic(filePath, body);
+  await pruneSnapshots(quadletName);
+  return { snapshotPath, changed: true };
+}
+
 export async function readLastGood(): Promise<LastGood | null> {
   try {
     const body = await readFile(LAST_GOOD_PATH, 'utf8');
