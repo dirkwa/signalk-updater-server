@@ -123,13 +123,23 @@ export async function registerChartsRoutes(app: FastifyInstance): Promise<void> 
           // Roll the Quadlet + hardware.json back to their pre-apply state and
           // restart. Charts adds a real new failure surface vs hardware-apply: a
           // host path podman rejects at container-create makes the unit fail to
-          // start — without a rollback the server would stay wedged. Each step is
-          // best-effort so a later failure can't skip the restart (which is what
-          // gets the data plane back); the restart error is the one surfaced.
+          // start — without a rollback the server would stay wedged. Every step
+          // runs even if an earlier one fails (so the restart, which recovers
+          // the data plane, is never skipped) but each failure is COLLECTED, so
+          // a null return truly means "fully restored". Returns null on a clean
+          // rollback, else a combined reason — never claim rolledBack when a
+          // restore step actually failed.
           const rollback = async (): Promise<string | null> => {
-            await restoreQuadletBody(SERVER_QUADLET, original).catch(() => undefined);
-            await writeHardware(current).catch(() => undefined);
-            return restartServer();
+            const errors: string[] = [];
+            await restoreQuadletBody(SERVER_QUADLET, original).catch((err: unknown) => {
+              errors.push(`quadlet restore: ${err instanceof Error ? err.message : String(err)}`);
+            });
+            await writeHardware(current).catch((err: unknown) => {
+              errors.push(`hardware restore: ${err instanceof Error ? err.message : String(err)}`);
+            });
+            const restartErr = await restartServer();
+            if (restartErr !== null) errors.push(`restart: ${restartErr}`);
+            return errors.length === 0 ? null : errors.join('; ');
           };
 
           // Persist hardware.json AFTER the Quadlet write. If it throws, the
@@ -138,11 +148,12 @@ export async function registerChartsRoutes(app: FastifyInstance): Promise<void> 
           try {
             await writeHardware(next);
           } catch (err) {
-            await rollback();
+            const rollbackErr = await rollback();
             return {
               ok: false,
               error: `failed to persist charts config: ${err instanceof Error ? err.message : String(err)}`,
-              rolledBack: true,
+              rolledBack: rollbackErr === null,
+              ...(rollbackErr !== null ? { rollbackError: rollbackErr } : {}),
             };
           }
 
