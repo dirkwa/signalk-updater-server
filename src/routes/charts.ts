@@ -57,12 +57,15 @@ export async function registerChartsRoutes(app: FastifyInstance): Promise<void> 
     '/api/charts/apply',
     { preHandler: requireToken },
     async (req, reply) => {
-      const raw = req.body ?? {};
-      if (typeof raw !== 'object' || Array.isArray(raw)) {
+      const raw = req.body;
+      // Reject null / arrays / non-objects up front. `req.body ?? {}` would turn
+      // a JSON `null` payload into an empty object and silently treat it as a
+      // valid "clear charts" instead of a 400.
+      if (raw === null || (raw !== undefined && (typeof raw !== 'object' || Array.isArray(raw)))) {
         reply.code(400);
         return { ok: false, error: 'request body must be a JSON object' };
       }
-      const body = raw as { hostPath?: unknown; enabled?: unknown };
+      const body = (raw ?? {}) as { hostPath?: unknown; enabled?: unknown };
       // Validate the request shape: a non-string hostPath / non-boolean enabled
       // would otherwise throw a 500 on `.trim()` instead of a clean 400.
       if (body.hostPath !== undefined && typeof body.hostPath !== 'string') {
@@ -116,17 +119,32 @@ export async function registerChartsRoutes(app: FastifyInstance): Promise<void> 
           const { original } = await rewriteQuadletBody(SERVER_QUADLET, (b) =>
             spliceChartsBlock(b, block),
           );
-          await writeHardware(next);
 
-          // Roll the Quadlet + hardware.json back to their pre-apply state.
-          // Charts adds a real new failure surface vs hardware-apply: a host
-          // path podman rejects at container-create makes the unit fail to
-          // start — without a rollback the server would stay wedged.
+          // Roll the Quadlet + hardware.json back to their pre-apply state and
+          // restart. Charts adds a real new failure surface vs hardware-apply: a
+          // host path podman rejects at container-create makes the unit fail to
+          // start — without a rollback the server would stay wedged. Each step is
+          // best-effort so a later failure can't skip the restart (which is what
+          // gets the data plane back); the restart error is the one surfaced.
           const rollback = async (): Promise<string | null> => {
-            await restoreQuadletBody(SERVER_QUADLET, original);
-            await writeHardware(current);
+            await restoreQuadletBody(SERVER_QUADLET, original).catch(() => undefined);
+            await writeHardware(current).catch(() => undefined);
             return restartServer();
           };
+
+          // Persist hardware.json AFTER the Quadlet write. If it throws, the
+          // Quadlet is already changed — roll back rather than leave the unit
+          // and hardware.json diverged.
+          try {
+            await writeHardware(next);
+          } catch (err) {
+            await rollback();
+            return {
+              ok: false,
+              error: `failed to persist charts config: ${err instanceof Error ? err.message : String(err)}`,
+              rolledBack: true,
+            };
+          }
 
           const restartErr = await restartServer();
           if (restartErr !== null) {

@@ -134,12 +134,17 @@ export async function rewriteQuadletBody(
 }
 
 /**
- * Restore a Quadlet body verbatim (no snapshot — used by rollback paths that
- * already snapshotted on the forward write). Keeps the only-rewriter-writes-
- * Quadlets invariant intact for rollback too.
+ * Restore a Quadlet body (used by rollback paths). Snapshots first (CC-1: every
+ * Quadlet write snapshots) so the failed-forward body is captured as a
+ * breadcrumb right when recovery/debugging needs it, then atomic-writes the
+ * restored body and prunes. Returns the snapshot path.
  */
-export async function restoreQuadletBody(quadletName: string, body: string): Promise<void> {
-  await writeAtomic(join(QUADLET_DIR, quadletName), body);
+export async function restoreQuadletBody(quadletName: string, body: string): Promise<string> {
+  const filePath = join(QUADLET_DIR, quadletName);
+  const snapshotPath = await snapshotQuadlet(quadletName);
+  await writeAtomic(filePath, body);
+  await pruneSnapshots(quadletName);
+  return snapshotPath;
 }
 
 // Marker the updater stamps onto the boot-start line it disables, so a later

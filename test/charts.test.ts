@@ -100,14 +100,16 @@ describe('spliceChartsBlock', () => {
     '# === END CHARTS ===',
     '',
     '[Service]',
-    'Restart=always',
+    'Restart=on-failure',
+    'StartLimitIntervalSec=300',
+    'StartLimitBurst=5',
     '',
   ].join('\n');
 
   it('replaces content between existing markers, preserving the rest', () => {
     const out = spliceChartsBlock(withMarkers, 'Volume=/home/sk/Charts:/home/node/charts-host');
     expect(out).toContain('Volume=/home/sk/Charts:/home/node/charts-host');
-    expect(out).toContain('Restart=always'); // untouched
+    expect(out).toContain('Restart=on-failure'); // untouched
     expect(out).toContain('# === BEGIN CHARTS');
     expect(out).toContain('# === END CHARTS');
   });
@@ -136,7 +138,9 @@ describe('spliceChartsBlock', () => {
     '# === END HARDWARE ===',
     '',
     '[Service]',
-    'Restart=always',
+    'Restart=on-failure',
+    'StartLimitIntervalSec=300',
+    'StartLimitBurst=5',
     '',
     '[Install]',
     'WantedBy=default.target',
@@ -161,6 +165,15 @@ describe('spliceChartsBlock', () => {
   it('throws rather than EOF-append when NEITHER CHARTS nor HARDWARE markers exist', () => {
     const noMarkers = '[Container]\nImage=x\n\n[Install]\nWantedBy=default.target\n';
     expect(() => spliceChartsBlock(noMarkers, 'Volume=/a:/b')).toThrow(/markers/);
+  });
+
+  it('fails closed when only ONE CHARTS marker is present (hand-mangled file)', () => {
+    const onlyBegin =
+      '[Container]\nImage=x\n# === BEGIN CHARTS ===\n# === END HARDWARE ===\n[Install]\nWantedBy=default.target\n';
+    const onlyEnd =
+      '[Container]\nImage=x\n# === END CHARTS ===\n# === END HARDWARE ===\n[Install]\nWantedBy=default.target\n';
+    expect(() => spliceChartsBlock(onlyBegin, 'Volume=/a:/b')).toThrow(/incomplete/);
+    expect(() => spliceChartsBlock(onlyEnd, 'Volume=/a:/b')).toThrow(/incomplete/);
   });
 });
 

@@ -271,9 +271,17 @@ export function spliceChartsBlock(body: string, block: string): string {
   const beginRe = /^# === BEGIN CHARTS/m;
   const endRe = /^# === END CHARTS/m;
   const hardwareEndRe = /^# === END HARDWARE/m;
+  const hasBegin = beginRe.test(body);
+  const hasEnd = endRe.test(body);
+
+  // Exactly one CHARTS marker = a hand-mangled file. Fail closed rather than
+  // fall through to the END HARDWARE branch and insert a SECOND managed block.
+  if (hasBegin !== hasEnd) {
+    throw new Error('cannot place CHARTS block: incomplete CHARTS markers in the Quadlet');
+  }
 
   // Markers present: replace between them.
-  if (beginRe.test(body) && endRe.test(body)) {
+  if (hasBegin && hasEnd) {
     const lines = body.split('\n');
     const out: string[] = [];
     let inBlock = false;
