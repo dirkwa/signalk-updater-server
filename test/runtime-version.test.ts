@@ -200,6 +200,41 @@ describe('getRuntimeIdentity — signalk discovery probe', () => {
   });
 });
 
+describe('getRuntimeIdentity — probe failure logging', () => {
+  it('warns once per failure reason and once on recovery', async () => {
+    await writeQuadlet('doctor.container', 'ghcr.io/dirkwa/signalk-doctor-server:latest');
+    // Same URL throughout so the transition map sees one probe target:
+    // fail twice (one warn), then recover (one more warn).
+    let status = 503;
+    const srv = createHttpServer((_req, res) => {
+      res.writeHead(status, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ version: '0.6.1' }));
+    });
+    await listen(srv);
+    const url = `http://127.0.0.1:${port(srv)}/api/health`;
+    mockResolveRuntime.mockResolvedValue(null);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { getRuntimeIdentity } = await import('../src/runtime-version.js');
+    const target = {
+      container: 'signalk-doctor-server',
+      quadletName: 'doctor.container',
+      healthUrl: url,
+    };
+
+    await getRuntimeIdentity(target);
+    await getRuntimeIdentity(target);
+    const failWarns = warnSpy.mock.calls.filter((c) => String(c[0]).includes(url));
+    expect(failWarns).toHaveLength(1);
+    expect(String(failWarns[0]?.[0])).toContain('http-503');
+
+    status = 200;
+    await getRuntimeIdentity(target);
+    const allWarns = warnSpy.mock.calls.filter((c) => String(c[0]).includes(url));
+    expect(allWarns).toHaveLength(2);
+    expect(String(allWarns[1]?.[0])).toContain('recovered');
+  });
+});
+
 describe('getRuntimeIdentity — OCI image label', () => {
   it('reads org.opencontainers.image.version from the image inspect', async () => {
     await writeQuadlet('server.container', 'ghcr.io/dirkwa/signalk-server:dirkwa');

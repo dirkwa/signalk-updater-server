@@ -15,7 +15,13 @@ export function port(s: HttpServer | HttpsServer): number {
 
 export function listen(s: HttpServer | HttpsServer): Promise<void> {
   servers.push(s);
-  return new Promise((resolve) => s.listen(0, '127.0.0.1', resolve));
+  return new Promise((resolve, reject) => {
+    s.once('error', reject);
+    s.listen(0, '127.0.0.1', () => {
+      s.removeListener('error', reject);
+      resolve();
+    });
+  });
 }
 
 export async function closeAllServers(): Promise<void> {
