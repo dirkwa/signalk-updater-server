@@ -1,6 +1,7 @@
 import { resolveRuntime, safe } from './podman/client.js';
 import { classifyChannel, isSemverTag } from './tagClassifier.js';
 import { readQuadletImageTag } from './quadlet-image-tag.js';
+import { probeJson } from './http-probe.js';
 import type { Channel } from './types.js';
 
 /**
@@ -58,21 +59,43 @@ export interface VersionTarget {
 
 const HEALTH_TIMEOUT_MS = 3000;
 
-async function probeHealth(url: string): Promise<string | null> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS);
-  try {
-    const res = await fetch(url, { signal: controller.signal });
-    if (!res.ok) return null;
-    const body = (await res.json()) as { version?: string };
-    if (typeof body.version !== 'string') return null;
-    if (body.version === '' || body.version === 'unknown') return null;
-    return body.version;
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
+/**
+ * Transition-only probe logging. /api/state runs these probes every few
+ * seconds off the dashboard poll, so per-attempt logging of a broken
+ * path would flood the journal with thousands of identical lines a day
+ * — while logging nothing leaves a broken path invisible (the
+ * 2026-07-12 field report had the signalk probe timing out on every
+ * poll for days with zero log evidence). Warn once when a probe starts
+ * failing or its failure reason changes, and once more when it
+ * recovers.
+ */
+const lastProbeReason = new Map<string, string | null>();
+
+function noteProbeOutcome(url: string, reason: string | null): void {
+  const prev = lastProbeReason.get(url);
+  if (prev === reason) return;
+  lastProbeReason.set(url, reason);
+  if (reason !== null) {
+    console.warn(`[runtime-version] probe ${url} failing: ${reason}`);
+  } else if (prev !== undefined) {
+    console.warn(`[runtime-version] probe ${url} recovered`);
   }
+}
+
+async function probeHealth(url: string): Promise<string | null> {
+  const result = await probeJson(url, HEALTH_TIMEOUT_MS);
+  if (!result.ok) {
+    noteProbeOutcome(url, result.error);
+    return null;
+  }
+  const body = result.body as { version?: string };
+  const v = body?.version;
+  if (typeof v !== 'string' || v === '' || v === 'unknown') {
+    noteProbeOutcome(url, 'bad-shape');
+    return null;
+  }
+  noteProbeOutcome(url, null);
+  return v;
 }
 
 interface SignalkDiscovery {
@@ -80,20 +103,26 @@ interface SignalkDiscovery {
 }
 
 async function probeSignalkVersion(url: string): Promise<string | null> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS);
-  try {
-    const res = await fetch(url, { signal: controller.signal });
-    if (!res.ok) return null;
-    const body = (await res.json()) as SignalkDiscovery;
-    const v = body.endpoints?.v1?.version;
-    if (typeof v !== 'string' || v === '' || v === 'unknown') return null;
-    return v;
-  } catch {
+  // allowSelfSigned: with the SSL plugin enabled, `:80/signalk` 302s to
+  // a self-signed `https://…:443/signalk`. probeJson follows that hop;
+  // a verifying client would fail every probe with
+  // SELF_SIGNED_CERT_IN_CHAIN and the dashboard would show "—" for the
+  // server version on every TLS-enabled install (same trade-off as the
+  // switch health-poll's allowSelfSigned — a version read on a
+  // link-local sibling, not a security boundary).
+  const result = await probeJson(url, HEALTH_TIMEOUT_MS, { allowSelfSigned: true });
+  if (!result.ok) {
+    noteProbeOutcome(url, result.error);
     return null;
-  } finally {
-    clearTimeout(timer);
   }
+  const body = result.body as SignalkDiscovery;
+  const v = body?.endpoints?.v1?.version;
+  if (typeof v !== 'string' || v === '' || v === 'unknown') {
+    noteProbeOutcome(url, 'bad-shape');
+    return null;
+  }
+  noteProbeOutcome(url, null);
+  return v;
 }
 
 interface DockerodeImageInspect {
