@@ -11,7 +11,7 @@ import {
   Row,
   Spinner,
 } from 'reactstrap';
-import { api, getApiBase } from '../api';
+import { api, getApiBase, type ApiError } from '../api';
 import { useApi } from '../hooks/useApi';
 import { useToast } from '../toast';
 import { useConfirm } from '../confirm';
@@ -295,15 +295,25 @@ export function Dashboard() {
     intervalMs: 10000,
   });
 
-  // True while POST /api/doctor/update is in flight from THIS tab. The
-  // doctor update is a single long POST (pull + restart + up-to-180s
-  // health-poll); without an in-flight guard the button stays pressable
-  // and a second click races the mutex into a 409. Also: behind the
-  // embedded plugin proxy the long POST can time out into a 502 while the
-  // switch keeps running server-side — so we drive the real outcome off
-  // the SSE progress stream (below), not this POST's response.
+  // True from the moment THIS tab starts a doctor update until the SSE
+  // stream delivers the terminal event. The POST itself answers 202
+  // immediately (the switch runs server-side in the background); without
+  // this guard the button stays pressable and a second click would just
+  // bounce off the mutex as a `failed` SSE event.
   const [doctorUpdating, setDoctorUpdating] = useState(false);
   const [doctorProgress, setDoctorProgress] = useState<SwitchProgressEvent | null>(null);
+  // Bounded recovery when the SSE terminal event never arrives (stream
+  // broken, laptop slept through it): armed on update start, disarmed by
+  // the terminal event; on firing it stops showing the button as busy so
+  // the user isn't stuck until a page reload. 200s covers the switch's
+  // health window with slack.
+  const doctorSafetyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const disarmDoctorSafety = (): void => {
+    if (doctorSafetyTimer.current !== null) {
+      clearTimeout(doctorSafetyTimer.current);
+      doctorSafetyTimer.current = null;
+    }
+  };
 
   // Refs so the SSE handler can refresh the polled views on a terminal
   // event without re-subscribing every render.
@@ -335,6 +345,7 @@ export function Dashboard() {
       if (parsed.target !== 'doctor') return;
       setDoctorProgress(parsed);
       if (parsed.stage === 'complete' || parsed.stage === 'failed') {
+        disarmDoctorSafety();
         setDoctorUpdating(false);
         if (parsed.stage === 'complete') {
           toastRef.current.show(`signalk-doctor-server updated to ${parsed.to ?? ''}`.trim(), 'ok');
@@ -364,6 +375,7 @@ export function Dashboard() {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      disarmDoctorSafety();
     };
   }, []);
 
@@ -464,31 +476,36 @@ export function Dashboard() {
     if (!r.confirmed) return;
     setDoctorUpdating(true);
     setDoctorProgress(null);
+    disarmDoctorSafety();
+    doctorSafetyTimer.current = setTimeout(() => {
+      doctorSafetyTimer.current = null;
+      if (mountedRef.current) setDoctorUpdating(false);
+    }, 200000);
     try {
       toast.show(`Updating signalk-doctor-server to ${tag}…`, 'info', 60000);
-      // The success/failure toast + state refresh is driven by the SSE
-      // terminal event (see the effect above), NOT this response: behind
-      // the embedded proxy the long POST can 502 while the switch is still
-      // running, and the stream is the reliable outcome signal. We still
-      // await it to surface a synchronous error (e.g. 409 mutex-busy) the
-      // stream wouldn't carry.
+      // The POST answers 202 as soon as the engine accepts the job; the
+      // success/failure toast + state refresh is driven by the SSE
+      // terminal event (see the effect above). Mutex-busy also arrives
+      // over the stream as a `failed` event — this response only surfaces
+      // request-level problems (auth, validation, engine unreachable).
       await api('/api/doctor/update', { method: 'POST', body: { tag } });
     } catch (err) {
-      // A 502/timeout here is expected when the proxy gives up on the long
-      // POST — the SSE stream will still deliver the real result, so only
-      // clear the in-flight state on a definite non-progress error and let
-      // the user see it. Refresh lock/doctor so a mutex 409 or a
-      // partially-applied switch is reflected immediately.
       const msg = err instanceof Error ? err.message : String(err);
-      toast.show(`Doctor update: ${msg} (watching progress…)`, 'err', 8000);
       void lock.refresh();
       void doctor.refresh();
-      // Safety net: if no SSE terminal event arrives within the health
-      // window, stop showing the button as busy so the user isn't stuck.
-      // Guard against firing after unmount.
-      setTimeout(() => {
+      if ((err as ApiError).status !== undefined) {
+        // A response arrived, so the job was definitively NOT accepted
+        // (auth/validation/busy engine) — nothing to watch, clear now.
+        toast.show(`Doctor update request rejected: ${msg}`, 'err', 8000);
+        disarmDoctorSafety();
         if (mountedRef.current) setDoctorUpdating(false);
-      }, 200000);
+      } else {
+        // Transport-level failure: the request may have died AFTER the
+        // engine accepted the job, so the switch could still be running.
+        // Stay busy and let the SSE terminal event (or the safety timer)
+        // settle it.
+        toast.show(`Doctor update: ${msg} — watching progress…`, 'err', 8000);
+      }
     }
   }, [confirm, doctor, doctorUpdating, lock, toast]);
 

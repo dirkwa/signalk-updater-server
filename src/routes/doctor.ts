@@ -6,7 +6,46 @@ import { performDoctorSwitch } from '../doctor-switch-service.js';
 import { MutexBusyError } from '../mutex.js';
 import { getRuntimeIdentity, type VersionTarget } from '../runtime-version.js';
 import { resolveDoctorHealthUrl } from '../signalk-url-resolver.js';
+import { publishSwitchEvent } from '../switch-progress-broker.js';
 import type { DoctorState } from '../types.js';
+
+interface MinimalLogger {
+  info(obj: object, msg?: string): void;
+  warn(obj: object, msg?: string): void;
+}
+
+/**
+ * Run the doctor switch in the background. performDoctorSwitch already
+ * publishes every stage (target:'doctor') over the switch-progress broker,
+ * so the only outcome it can't surface itself is a mutex-busy rejection
+ * (thrown before any event) — publish that as a `failed` event so the
+ * Dashboard, which drives the result off SSE, learns about it. Invoked
+ * fire-and-forget from the 202 route; never throws. Same shape as
+ * runBackgroundSwitch in routes/switch.ts.
+ */
+async function runBackgroundDoctorSwitch(tag: string, log: MinimalLogger): Promise<void> {
+  try {
+    const result = await performDoctorSwitch({ tag });
+    log.info({ to: tag, ok: result.ok }, 'doctor switch finished');
+  } catch (err) {
+    if (err instanceof MutexBusyError) {
+      publishSwitchEvent({
+        stage: 'failed',
+        target: 'doctor',
+        to: tag,
+        error: 'Another operation is in progress — try again once it finishes.',
+      });
+    } else {
+      publishSwitchEvent({
+        stage: 'failed',
+        target: 'doctor',
+        to: tag,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    log.warn({ to: tag, err }, 'background doctor switch error');
+  }
+}
 
 const DOCTOR_IMAGE = process.env.DOCTOR_IMAGE ?? 'ghcr.io/dirkwa/signalk-doctor-server';
 
@@ -61,21 +100,17 @@ export async function registerDoctorRoutes(app: FastifyInstance): Promise<void> 
         reply.code(400);
         return { error: 'no target tag available' };
       }
-      try {
-        const result = await performDoctorSwitch({ tag: target });
-        if (!result.ok) {
-          reply.code(500);
-          return { error: result.error ?? 'doctor switch failed', result };
-        }
-        return result;
-      } catch (err) {
-        if (err instanceof MutexBusyError) {
-          reply.code(409);
-          return { error: err.message, lock: err.lock };
-        }
-        reply.code(500);
-        return { error: err instanceof Error ? err.message : 'unknown error' };
-      }
+      // Return 202 immediately and run the switch in the background — same
+      // fix shape as /api/versions/switch. The full pull → trial → rewrite
+      // → restart → health-poll flow outlives the embedded plugin proxy's
+      // 15s header watchdog, so the old synchronous response surfaced as
+      // "502 Bad Gateway" on EVERY doctor update even though the switch
+      // succeeded out-of-band. The Dashboard drives the real outcome off
+      // the switch-progress SSE (doctor events carry target:'doctor'),
+      // including mutex-busy, which now arrives as a `failed` event.
+      void runBackgroundDoctorSwitch(target, app.log);
+      reply.code(202);
+      return { ok: true, accepted: true, to: target };
     },
   );
 }
