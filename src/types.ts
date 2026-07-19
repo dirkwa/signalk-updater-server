@@ -39,11 +39,7 @@ export interface AnnotatedTag extends Tag {
  *  rules (image-id equality for the local check, digest-set membership
  *  for the remote check, dangling-image handling). */
 export type ImageState =
-  | 'in-sync'
-  | 'restart-required'
-  | 'pull-available'
-  | 'pull-and-restart'
-  | 'unknown';
+  'in-sync' | 'restart-required' | 'pull-available' | 'pull-and-restart' | 'unknown';
 
 export interface ContainerSnapshot {
   /** OperatorIntent: the tag suffix from the Quadlet's `Image=` line
@@ -166,12 +162,7 @@ export interface AvailableUpdates {
 
 /** Mirror of the doctor's `DriftClassification` enum. */
 export type DriftClassification =
-  | 'up-to-date'
-  | 'patch'
-  | 'minor'
-  | 'major'
-  | 'prerelease'
-  | 'unknown';
+  'up-to-date' | 'patch' | 'minor' | 'major' | 'prerelease' | 'unknown';
 
 /** Single package row in the drift report. */
 export interface DriftPackage {
