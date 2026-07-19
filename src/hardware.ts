@@ -147,7 +147,16 @@ export function renderHardwareBlock(hw: HardwareJson): string {
     if (c.enabled && c.interface) lines.push(`AddDevice=/dev/${c.interface}`);
   }
   if (hw.bluetooth.enabled && hw.bluetooth.dbusAvailable) {
-    lines.push('Volume=/run/dbus:/run/dbus:ro');
+    // The signalk-dbus-proxy sidecar's named socket volume, NOT a direct
+    // /run/dbus bind mount. D-Bus EXTERNAL auth compares the uid the
+    // in-container client sends against the kernel's SO_PEERCRED; across
+    // the rootless userns those differ on any host whose SignalK user
+    // isn't uid 1000, so a direct mount never authenticates and BLE
+    // plugins die with "closed stream". The proxy rewrites the AUTH uid
+    // in transit. Must match the installer's render-server-quadlet.sh
+    // bluetooth clause — an apply that emitted the old bind mount here
+    // would silently regress a working `signalk bluetooth enable`.
+    lines.push('Volume=signalk-dbus-socket:/run/dbus:rw');
   }
   if (hw.gpio.enabled) {
     lines.push('Volume=/dev/gpiomem:/dev/gpiomem');

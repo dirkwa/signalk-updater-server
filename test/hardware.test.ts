@@ -60,14 +60,19 @@ describe('renderHardwareBlock', () => {
     expect(block).not.toContain('AddDevice=/dev/serial/by-id/usb-Actisense_NGT-1_001');
   });
 
-  it('emits DBus volume when bluetooth enabled + dbusAvailable', () => {
+  it('emits the dbus-proxy socket volume when bluetooth enabled + dbusAvailable', () => {
     const hw = { ...SAMPLE_HW, bluetooth: { dbusAvailable: true, enabled: true } };
-    expect(renderHardwareBlock(hw)).toContain('Volume=/run/dbus:/run/dbus:ro');
+    const block = renderHardwareBlock(hw);
+    expect(block).toContain('Volume=signalk-dbus-socket:/run/dbus:rw');
+    // The legacy direct bind mount cannot authenticate across the
+    // rootless userns (EXTERNAL auth uid mismatch) — re-emitting it
+    // would regress a working `signalk bluetooth enable`.
+    expect(block).not.toContain('Volume=/run/dbus:/run/dbus');
   });
 
   it('omits dbus volume when bluetooth dbusAvailable false', () => {
     const hw = { ...SAMPLE_HW, bluetooth: { dbusAvailable: false, enabled: true } };
-    expect(renderHardwareBlock(hw)).not.toContain('Volume=/run/dbus');
+    expect(renderHardwareBlock(hw)).not.toContain('signalk-dbus-socket');
   });
 });
 
