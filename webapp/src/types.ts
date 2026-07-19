@@ -24,11 +24,7 @@ export type ChannelOrUnknown = Channel | 'unknown';
  *  "restart required" / "update available" chips for rolling tags like
  *  `:dirkwa`, where the semver never moves between builds. */
 export type ImageState =
-  | 'in-sync'
-  | 'restart-required'
-  | 'pull-available'
-  | 'pull-and-restart'
-  | 'unknown';
+  'in-sync' | 'restart-required' | 'pull-available' | 'pull-and-restart' | 'unknown';
 
 export interface ContainerSnapshot {
   /** OperatorIntent: tag suffix from the Quadlet's `Image=` line. NOT
@@ -140,12 +136,7 @@ export interface AvailableUpdates {
 }
 
 export type DriftClassification =
-  | 'up-to-date'
-  | 'patch'
-  | 'minor'
-  | 'major'
-  | 'prerelease'
-  | 'unknown';
+  'up-to-date' | 'patch' | 'minor' | 'major' | 'prerelease' | 'unknown';
 
 export interface DriftPackage {
   name: string;
