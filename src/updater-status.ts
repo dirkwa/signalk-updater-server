@@ -61,15 +61,18 @@ function updateResult(
   if (info.imageState && IMAGE_UPDATE_STATES.has(info.imageState)) {
     return { id, label, status: 'warn', message: imageStateMessage(info.imageState) };
   }
+  // Couldn't determine image freshness (GHCR unreachable / no drift data) — do
+  // NOT report a false-green "up to date"; surface it as unknown.
+  if (info.imageState === undefined || info.imageState === 'unknown') {
+    return { id, label, status: 'unknown', message: 'image freshness unknown' };
+  }
   return { id, label, status: 'ok', message: 'up to date' };
 }
 
 function containerResult(id: string, label: string, state: string): StatusResult {
-  // running / starting are fine; everything else is a real fault.
   if (state === 'running' || state === 'starting') {
     return { id, label, status: 'ok', message: state };
   }
-  // stopped / unhealthy / missing — all real faults.
   return { id, label, status: 'fail', message: `container is ${state}` };
 }
 
@@ -95,12 +98,19 @@ export function buildUpdaterStatus(now: string, inputs: StatusInputs): UpdaterSt
     updateResult('update-available-signalk', 'SignalK server image', inputs.updates.signalkServer),
   );
 
-  // 2. Container health (stopped / unhealthy / missing = fail).
+  // 2. Container health (stopped / unhealthy / missing = fail). Include the
+  //    updater's own container: an unhealthy updater that can still answer this
+  //    endpoint would otherwise report the fleet healthy.
   results.push(
     containerResult(
       'container-signalk-server',
       'SignalK server container',
       inputs.current.signalkServer.state,
+    ),
+    containerResult(
+      'container-signalk-updater-server',
+      'Updater container',
+      inputs.current.updaterServer.state,
     ),
     containerResult(
       'container-signalk-doctor-server',

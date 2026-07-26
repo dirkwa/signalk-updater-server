@@ -33,12 +33,34 @@ const by = (s: ReturnType<typeof buildUpdaterStatus>, id: string) =>
   s.results.find((r) => r.id === id);
 
 describe('buildUpdaterStatus', () => {
-  it('all-clear → every result ok, no warn/fail', () => {
+  it('all-clear → every result ok, no warn/fail/unknown', () => {
     const s = buildUpdaterStatus(NOW, inputs());
     expect(s.summary.warn).toBe(0);
     expect(s.summary.fail).toBe(0);
-    expect(by(s, 'update-available-updater')?.status).toBe('ok');
-    expect(by(s, 'container-signalk-server')?.status).toBe('ok');
+    expect(s.summary.unknown).toBe(0);
+    expect(s.results.every((r) => r.status === 'ok')).toBe(true);
+  });
+
+  it('reports unknown (not false-green) when image freshness is undetermined', () => {
+    const s = buildUpdaterStatus(
+      NOW,
+      inputs({
+        updates: {
+          ...inputs().updates,
+          updater: { currentTag: '1', updateAvailable: false, imageState: 'unknown' },
+        },
+      }),
+    );
+    expect(by(s, 'update-available-updater')?.status).toBe('unknown');
+  });
+
+  it('includes the updater container in health', () => {
+    const c = inputs().current;
+    const s = buildUpdaterStatus(
+      NOW,
+      inputs({ current: { ...c, updaterServer: { ...c.updaterServer, state: 'unhealthy' } } }),
+    );
+    expect(by(s, 'container-signalk-updater-server')?.status).toBe('fail');
   });
 
   it('warns on a channel-aware semver update available (updater)', () => {

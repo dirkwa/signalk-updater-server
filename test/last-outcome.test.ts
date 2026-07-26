@@ -17,10 +17,12 @@ describe('last-outcome cache', () => {
   it('records and reads back an outcome, stamping a timestamp', () => {
     recordOutcome({ operation: 'switch', ok: true, from: '1.0.0', to: '1.1.0' });
     const o = getLastOutcome('switch');
-    expect(o?.ok).toBe(true);
-    expect(o?.to).toBe('1.1.0');
-    expect(typeof o?.at).toBe('string');
-    expect(Number.isNaN(Date.parse(o!.at))).toBe(false);
+    expect(o).toBeDefined();
+    if (!o) return;
+    expect(o.ok).toBe(true);
+    expect(o.to).toBe('1.1.0');
+    expect(typeof o.at).toBe('string');
+    expect(Number.isNaN(Date.parse(o.at))).toBe(false);
   });
 
   it('keeps only the latest outcome per operation', () => {

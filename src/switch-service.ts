@@ -1,7 +1,7 @@
 import { safe } from './podman/client.js';
 import { rewriteQuadletImage, writeLastGood } from './quadlet/rewriter.js';
 import { daemonReload, startUnit, stopUnitAndWait } from './dbus/systemd-user.js';
-import { withMutex } from './mutex.js';
+import { withMutex, MutexBusyError } from './mutex.js';
 import { preSwitchBackup, type BackupResult } from './backup.js';
 import { DEFAULT_HEALTH_TIMEOUT_MS, pollHealth, pullImage, trialRun } from './container-ops.js';
 import { publishSwitchEvent } from './switch-progress-broker.js';
@@ -23,15 +23,29 @@ interface SwitchInput {
 }
 
 export async function performSwitch(input: SwitchInput): Promise<SwitchResult> {
-  const result = await withMutex('switch', () => doSwitch(input));
-  recordOutcome({
-    operation: 'switch',
-    ok: result.ok,
-    from: result.from || undefined,
-    to: result.to,
-    ...(result.error !== undefined ? { error: result.error } : {}),
-  });
-  return result;
+  try {
+    const result = await withMutex('switch', () => doSwitch(input));
+    recordOutcome({
+      operation: 'switch',
+      ok: result.ok,
+      from: result.from || undefined,
+      to: result.to,
+      ...(result.error !== undefined ? { error: result.error } : {}),
+    });
+    return result;
+  } catch (err) {
+    // A thrown failure (doSwitch rejected unexpectedly) must still land in the
+    // outcome cache — but mutex CONTENTION is not a completed operation, so let
+    // MutexBusyError propagate un-recorded to the caller's 409 path.
+    if (err instanceof MutexBusyError) throw err;
+    recordOutcome({
+      operation: 'switch',
+      ok: false,
+      to: input.tag,
+      error: err instanceof Error ? err.message : 'unknown error',
+    });
+    throw err;
+  }
 }
 
 async function doSwitch(input: SwitchInput): Promise<SwitchResult> {

@@ -1,7 +1,7 @@
 import { safe } from './podman/client.js';
 import { rewriteQuadletImage, writeLastGood } from './quadlet/rewriter.js';
 import { daemonReload, startUnit, stopUnitAndWait } from './dbus/systemd-user.js';
-import { withMutex } from './mutex.js';
+import { withMutex, MutexBusyError } from './mutex.js';
 import { DEFAULT_HEALTH_TIMEOUT_MS, pollHealth, pullImage, trialRun } from './container-ops.js';
 import { invalidate as invalidateUpdatesCache } from './update-checker.js';
 import { pruneOldImagesFor } from './image-retention.js';
@@ -38,15 +38,27 @@ export async function performDoctorSwitch(input: DoctorSwitchInput): Promise<Swi
   // Same mutex as signalk-server switch + self-update. CC-5 invariant:
   // only one of these flows can run at a time across the updater AND
   // the doctor (the doctor's recovery flow also takes the same lock).
-  const result = await withMutex('doctor-switch', () => doDoctorSwitch(input));
-  recordOutcome({
-    operation: 'doctor-update',
-    ok: result.ok,
-    from: result.from || undefined,
-    to: result.to,
-    ...(result.error !== undefined ? { error: result.error } : {}),
-  });
-  return result;
+  try {
+    const result = await withMutex('doctor-switch', () => doDoctorSwitch(input));
+    recordOutcome({
+      operation: 'doctor-update',
+      ok: result.ok,
+      from: result.from || undefined,
+      to: result.to,
+      ...(result.error !== undefined ? { error: result.error } : {}),
+    });
+    return result;
+  } catch (err) {
+    // Thrown failure still recorded; mutex contention propagates un-recorded.
+    if (err instanceof MutexBusyError) throw err;
+    recordOutcome({
+      operation: 'doctor-update',
+      ok: false,
+      to: input.tag,
+      error: err instanceof Error ? err.message : 'unknown error',
+    });
+    throw err;
+  }
 }
 
 async function doDoctorSwitch(input: DoctorSwitchInput): Promise<SwitchResult> {

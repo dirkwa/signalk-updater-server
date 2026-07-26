@@ -89,12 +89,18 @@ export async function registerSelfRoutes(app: FastifyInstance): Promise<void> {
           reply.code(409);
           return { error: err.message, lock: err.lock };
         }
+        // Never surface raw exception text to the client or the outcome cache
+        // — rewrite/DBus/runtime errors can carry host paths and low-level
+        // detail. Log the raw message server-side; return/store a stable
+        // generic message. (Repo rule: UI surfaces userMessage, never raw
+        // error text.)
+        app.log.error({ err, tag }, 'self-update failed');
+        const message = `self-update to ${tag} failed`;
         // Record the failure so it's pollable (updater-status → notification).
         // We only record FAILURE here: on success the process restarts away
         // (SIGTERM below) and this module cache dies with it, so a stale
         // "self-update ok" would never be meaningful — absence of a failure
         // outcome after a boot IS the success signal.
-        const message = err instanceof Error ? err.message : 'unknown error';
         recordOutcome({
           operation: 'self-update',
           ok: false,
