@@ -11,6 +11,7 @@ import { registerSwitchRoutes } from './routes/switch.js';
 import { registerSelfRoutes } from './routes/self.js';
 import { registerDoctorRoutes } from './routes/doctor.js';
 import { registerUpdateRoutes } from './routes/updates.js';
+import { registerUpdaterStatusRoutes } from './routes/updater-status.js';
 import { registerLogStreamRoutes } from './routes/logs-stream.js';
 import { registerHardwareRoutes } from './routes/hardware.js';
 import { registerLockRoutes } from './routes/lock.js';
@@ -55,6 +56,7 @@ export async function createServer(): Promise<FastifyInstance> {
   await registerSelfRoutes(app);
   await registerDoctorRoutes(app);
   await registerUpdateRoutes(app);
+  await registerUpdaterStatusRoutes(app);
   await registerLogStreamRoutes(app);
   await registerHardwareRoutes(app);
   await registerLockRoutes(app);

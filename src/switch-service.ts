@@ -1,13 +1,14 @@
 import { safe } from './podman/client.js';
 import { rewriteQuadletImage, writeLastGood } from './quadlet/rewriter.js';
 import { daemonReload, startUnit, stopUnitAndWait } from './dbus/systemd-user.js';
-import { withMutex } from './mutex.js';
+import { withMutex, MutexBusyError } from './mutex.js';
 import { preSwitchBackup, type BackupResult } from './backup.js';
 import { DEFAULT_HEALTH_TIMEOUT_MS, pollHealth, pullImage, trialRun } from './container-ops.js';
 import { publishSwitchEvent } from './switch-progress-broker.js';
 import { refreshDoctorDrift } from './drift-client.js';
 import { pruneOldImagesFor } from './image-retention.js';
 import { resolveSignalkHealthUrl } from './signalk-url-resolver.js';
+import { recordOutcome } from './last-outcome.js';
 import type { SwitchResult } from './types.js';
 
 const SIGNALK_IMAGE = process.env.SIGNALK_IMAGE ?? 'ghcr.io/dirkwa/signalk-server';
@@ -22,7 +23,33 @@ interface SwitchInput {
 }
 
 export async function performSwitch(input: SwitchInput): Promise<SwitchResult> {
-  return withMutex('switch', () => doSwitch(input));
+  try {
+    const result = await withMutex('switch', () => doSwitch(input));
+    recordOutcome({
+      operation: 'switch',
+      ok: result.ok,
+      from: result.from || undefined,
+      to: result.to,
+      ...(result.error !== undefined ? { error: result.error } : {}),
+    });
+    return result;
+  } catch (err) {
+    // A thrown failure (doSwitch rejected unexpectedly) must still land in the
+    // outcome cache — but mutex CONTENTION is not a completed operation, so let
+    // MutexBusyError propagate un-recorded to the caller's 409 path.
+    if (err instanceof MutexBusyError) throw err;
+    // Store a STABLE, safe message (raw exception text can carry host paths /
+    // low-level detail, and this string is surfaced via updater-status → a
+    // SignalK notification). The raw error still propagates via `throw` to the
+    // route handler, which logs it. Repo rule: userMessage, never raw text.
+    recordOutcome({
+      operation: 'switch',
+      ok: false,
+      to: input.tag,
+      error: `switch to ${input.tag} failed`,
+    });
+    throw err;
+  }
 }
 
 async function doSwitch(input: SwitchInput): Promise<SwitchResult> {
@@ -93,11 +120,15 @@ async function doSwitch(input: SwitchInput): Promise<SwitchResult> {
     previousImage = rewrite.previousImage;
     snapshotPath = rewrite.snapshotPath;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    // Don't embed the raw exception (can carry host paths) in the surfaced
+    // error — it flows to the SSE event and, via recordOutcome, to a SignalK
+    // notification. Log the raw detail; surface a stable message.
+    const raw = err instanceof Error ? err.message : String(err);
+    console.error(`switch: quadlet rewrite failed for ${input.tag}: ${raw}`);
     publishSwitchEvent({
       stage: 'failed',
       to: input.tag,
-      error: `quadlet rewrite failed: ${msg}`,
+      error: 'quadlet rewrite failed',
     });
     return {
       ok: false,
@@ -105,7 +136,7 @@ async function doSwitch(input: SwitchInput): Promise<SwitchResult> {
       to: input.tag,
       durationMs: Date.now() - start,
       hooksRun,
-      error: `quadlet rewrite failed: ${msg}`,
+      error: 'quadlet rewrite failed',
     };
   }
 

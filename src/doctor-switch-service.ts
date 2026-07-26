@@ -1,12 +1,13 @@
 import { safe } from './podman/client.js';
 import { rewriteQuadletImage, writeLastGood } from './quadlet/rewriter.js';
 import { daemonReload, startUnit, stopUnitAndWait } from './dbus/systemd-user.js';
-import { withMutex } from './mutex.js';
+import { withMutex, MutexBusyError } from './mutex.js';
 import { DEFAULT_HEALTH_TIMEOUT_MS, pollHealth, pullImage, trialRun } from './container-ops.js';
 import { invalidate as invalidateUpdatesCache } from './update-checker.js';
 import { pruneOldImagesFor } from './image-retention.js';
 import { resolveDoctorHealthUrl } from './signalk-url-resolver.js';
 import { publishSwitchEvent } from './switch-progress-broker.js';
+import { recordOutcome } from './last-outcome.js';
 import type { SwitchProgressEvent, SwitchResult } from './types.js';
 
 // All progress events from this flow carry target:'doctor' so the UI
@@ -37,7 +38,29 @@ export async function performDoctorSwitch(input: DoctorSwitchInput): Promise<Swi
   // Same mutex as signalk-server switch + self-update. CC-5 invariant:
   // only one of these flows can run at a time across the updater AND
   // the doctor (the doctor's recovery flow also takes the same lock).
-  return withMutex('doctor-switch', () => doDoctorSwitch(input));
+  try {
+    const result = await withMutex('doctor-switch', () => doDoctorSwitch(input));
+    recordOutcome({
+      operation: 'doctor-update',
+      ok: result.ok,
+      from: result.from || undefined,
+      to: result.to,
+      ...(result.error !== undefined ? { error: result.error } : {}),
+    });
+    return result;
+  } catch (err) {
+    // Thrown failure still recorded; mutex contention propagates un-recorded.
+    if (err instanceof MutexBusyError) throw err;
+    // Safe, stable message (surfaced via updater-status → notification); the
+    // raw error still propagates via `throw` and is logged by the route.
+    recordOutcome({
+      operation: 'doctor-update',
+      ok: false,
+      to: input.tag,
+      error: `doctor update to ${input.tag} failed`,
+    });
+    throw err;
+  }
 }
 
 async function doDoctorSwitch(input: DoctorSwitchInput): Promise<SwitchResult> {
@@ -84,15 +107,18 @@ async function doDoctorSwitch(input: DoctorSwitchInput): Promise<SwitchResult> {
     previousImage = rewrite.previousImage;
     snapshotPath = rewrite.snapshotPath;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    emit({ stage: 'failed', to: input.tag, error: `quadlet rewrite failed: ${msg}` });
+    // Raw exception (may carry host paths) → log only; surface a stable string
+    // (flows to the SSE event and, via recordOutcome, a SignalK notification).
+    const raw = err instanceof Error ? err.message : String(err);
+    console.error(`doctor-switch: quadlet rewrite failed for ${input.tag}: ${raw}`);
+    emit({ stage: 'failed', to: input.tag, error: 'quadlet rewrite failed' });
     return {
       ok: false,
       from: '',
       to: input.tag,
       durationMs: Date.now() - start,
       hooksRun,
-      error: `quadlet rewrite failed: ${msg}`,
+      error: 'quadlet rewrite failed',
     };
   }
 
