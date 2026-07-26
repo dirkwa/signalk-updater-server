@@ -8,6 +8,7 @@ import { pickLatestStable } from '../tagClassifier.js';
 import { resolveRuntime, safe } from '../podman/client.js';
 import { getSelfVersion } from './health.js';
 import { invalidate as invalidateUpdatesCache } from '../update-checker.js';
+import { recordOutcome } from '../last-outcome.js';
 
 /** Our own image ref. Exported so the boot-time image prune in index.ts uses
  *  the same value and the two can't drift. */
@@ -88,8 +89,21 @@ export async function registerSelfRoutes(app: FastifyInstance): Promise<void> {
           reply.code(409);
           return { error: err.message, lock: err.lock };
         }
+        // Record the failure so it's pollable (updater-status → notification).
+        // We only record FAILURE here: on success the process restarts away
+        // (SIGTERM below) and this module cache dies with it, so a stale
+        // "self-update ok" would never be meaningful — absence of a failure
+        // outcome after a boot IS the success signal.
+        const message = err instanceof Error ? err.message : 'unknown error';
+        recordOutcome({
+          operation: 'self-update',
+          ok: false,
+          from: state,
+          to: tag,
+          error: message,
+        });
         reply.code(500);
-        return { error: err instanceof Error ? err.message : 'unknown error' };
+        return { error: message };
       }
       // Send the response BEFORE asking systemd to restart us — once
       // restartUnit() fires, podman is going to SIGTERM our process

@@ -86,3 +86,36 @@ export function pickLatestStable<T extends { name: string; channel: Channel }>(
   stable.sort((a, b) => compareSemver(b.name, a.name));
   return stable[0] ?? null;
 }
+
+/**
+ * Pick the highest concrete-semver tag *relevant to the channel a user is
+ * running*, for the "is a newer image available on my channel" check:
+ *
+ * - **stable** → highest stable semver (same as `pickLatestStable`).
+ * - **beta**   → highest of the beta AND stable channels. A beta user is
+ *   downstream of stable, so a stable release that outranks the running beta
+ *   is a valid upgrade target for them; a newer beta is too.
+ * - **dirkwa** / **master** → null. These channels have no ordered semver
+ *   release stream (`dirkwa-<sha>` / `master-<sha>` are floating dev/fork
+ *   refs); "is there an update" for them is answered by image-digest drift
+ *   (imageState `pull-available`), not a semver comparison. Callers use the
+ *   imageState signal for these and ignore this function's null.
+ *
+ * `compareSemver` already orders stable above an equal-version prerelease, so
+ * mixing beta+stable in one sort is correct (0.6.0 sorts above 0.6.0-beta.1).
+ */
+export function pickLatestForChannel<T extends { name: string; channel: Channel }>(
+  tags: T[],
+  channel: Channel,
+): T | null {
+  if (channel === 'stable') return pickLatestStable(tags);
+  if (channel === 'beta') {
+    const relevant = tags.filter(
+      (t) => (t.channel === 'beta' || t.channel === 'stable') && isSemverTag(t.name),
+    );
+    relevant.sort((a, b) => compareSemver(b.name, a.name));
+    return relevant[0] ?? null;
+  }
+  // dirkwa / master: no semver stream — the caller uses imageState instead.
+  return null;
+}

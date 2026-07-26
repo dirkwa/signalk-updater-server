@@ -7,6 +7,7 @@ import { invalidate as invalidateUpdatesCache } from './update-checker.js';
 import { pruneOldImagesFor } from './image-retention.js';
 import { resolveDoctorHealthUrl } from './signalk-url-resolver.js';
 import { publishSwitchEvent } from './switch-progress-broker.js';
+import { recordOutcome } from './last-outcome.js';
 import type { SwitchProgressEvent, SwitchResult } from './types.js';
 
 // All progress events from this flow carry target:'doctor' so the UI
@@ -37,7 +38,15 @@ export async function performDoctorSwitch(input: DoctorSwitchInput): Promise<Swi
   // Same mutex as signalk-server switch + self-update. CC-5 invariant:
   // only one of these flows can run at a time across the updater AND
   // the doctor (the doctor's recovery flow also takes the same lock).
-  return withMutex('doctor-switch', () => doDoctorSwitch(input));
+  const result = await withMutex('doctor-switch', () => doDoctorSwitch(input));
+  recordOutcome({
+    operation: 'doctor-update',
+    ok: result.ok,
+    from: result.from || undefined,
+    to: result.to,
+    ...(result.error !== undefined ? { error: result.error } : {}),
+  });
+  return result;
 }
 
 async function doDoctorSwitch(input: DoctorSwitchInput): Promise<SwitchResult> {

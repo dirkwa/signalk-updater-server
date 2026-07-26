@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { classifyChannel, compareSemver, isSemverTag } from '../src/tagClassifier.js';
+import {
+  classifyChannel,
+  compareSemver,
+  isSemverTag,
+  pickLatestForChannel,
+} from '../src/tagClassifier.js';
 
 describe('classifyChannel', () => {
   it('stable for plain semver', () => {
@@ -65,5 +70,43 @@ describe('isSemverTag', () => {
     expect(isSemverTag('sha256:abcdef0123456789')).toBe(false);
     expect(isSemverTag('')).toBe(false);
     expect(isSemverTag('not.a.version')).toBe(false);
+  });
+});
+
+describe('pickLatestForChannel', () => {
+  // Tags carry a `channel` field (as GHCR listing annotates them via classifyChannel).
+  const tag = (name: string) => ({ name, channel: classifyChannel(name) });
+  const TAGS = [
+    tag('0.6.0'),
+    tag('0.6.1'),
+    tag('0.7.0-beta.1'),
+    tag('0.7.0-beta.2'),
+    tag('latest'),
+    tag('beta'),
+    tag('master-abc1234'),
+    tag('dirkwa-experimental'),
+  ];
+
+  it('stable → highest stable semver', () => {
+    expect(pickLatestForChannel(TAGS, 'stable')?.name).toBe('0.6.1');
+  });
+
+  it('beta → highest of beta AND stable (stable can win)', () => {
+    // 0.6.1 (stable) vs 0.7.0-beta.2 (beta): 0.7.0-beta.2 is the higher version.
+    expect(pickLatestForChannel(TAGS, 'beta')?.name).toBe('0.7.0-beta.2');
+  });
+
+  it('beta → a newer stable outranks the running beta', () => {
+    const tags = [tag('0.6.0-beta.1'), tag('0.6.0'), tag('0.5.0')];
+    // stable 0.6.0 > 0.6.0-beta.1 (compareSemver: stable beats equal-version prerelease)
+    expect(pickLatestForChannel(tags, 'beta')?.name).toBe('0.6.0');
+  });
+
+  it('dirkwa → null (no semver stream; imageState answers instead)', () => {
+    expect(pickLatestForChannel(TAGS, 'dirkwa')).toBeNull();
+  });
+
+  it('master → null (no semver stream)', () => {
+    expect(pickLatestForChannel(TAGS, 'master')).toBeNull();
   });
 });

@@ -8,6 +8,7 @@ import { publishSwitchEvent } from './switch-progress-broker.js';
 import { refreshDoctorDrift } from './drift-client.js';
 import { pruneOldImagesFor } from './image-retention.js';
 import { resolveSignalkHealthUrl } from './signalk-url-resolver.js';
+import { recordOutcome } from './last-outcome.js';
 import type { SwitchResult } from './types.js';
 
 const SIGNALK_IMAGE = process.env.SIGNALK_IMAGE ?? 'ghcr.io/dirkwa/signalk-server';
@@ -22,7 +23,15 @@ interface SwitchInput {
 }
 
 export async function performSwitch(input: SwitchInput): Promise<SwitchResult> {
-  return withMutex('switch', () => doSwitch(input));
+  const result = await withMutex('switch', () => doSwitch(input));
+  recordOutcome({
+    operation: 'switch',
+    ok: result.ok,
+    from: result.from || undefined,
+    to: result.to,
+    ...(result.error !== undefined ? { error: result.error } : {}),
+  });
+  return result;
 }
 
 async function doSwitch(input: SwitchInput): Promise<SwitchResult> {

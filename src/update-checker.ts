@@ -1,11 +1,11 @@
 import { clearListTagsCache, listTags } from './ghcr.js';
-import { compareSemver, pickLatestStable } from './tagClassifier.js';
+import { compareSemver, pickLatestForChannel } from './tagClassifier.js';
 import { fetchDriftReport } from './drift-client.js';
 import { getRuntimeIdentity, type VersionTarget } from './runtime-version.js';
 import { getImageDrift } from './image-drift.js';
 import { getSelfVersion } from './routes/health.js';
 import { resolveDoctorHealthUrl, resolveSignalkHealthUrl } from './signalk-url-resolver.js';
-import type { AvailableUpdates, UpdateInfo } from './types.js';
+import type { AvailableUpdates, Channel, UpdateInfo } from './types.js';
 
 const UPDATER_IMAGE = process.env.SELF_IMAGE ?? 'ghcr.io/dirkwa/signalk-updater-server';
 const DOCTOR_IMAGE = process.env.DOCTOR_IMAGE ?? 'ghcr.io/dirkwa/signalk-doctor-server';
@@ -53,10 +53,19 @@ let cache: AvailableUpdates = {
 
 let timer: ReturnType<typeof setInterval> | null = null;
 
-async function deriveLatestStable(image: string): Promise<string | null> {
+// Latest tag relevant to the channel the container is RUNNING (not always
+// stable): stable→stable, beta→beta-or-stable, dirkwa/master→null (those have
+// no semver stream; imageState drift answers "update available" for them).
+async function deriveLatestForChannel(
+  image: string,
+  channel: Channel | 'unknown',
+): Promise<string | null> {
+  // 'unknown' channel = a floating/unclassifiable running tag; no meaningful
+  // semver target, same as dirkwa/master.
+  if (channel === 'unknown' || channel === 'dirkwa' || channel === 'master') return null;
   const r = await listTags(image.replace(/^ghcr\.io\//, ''));
   if (!r.ok) return null;
-  return pickLatestStable(r.tags)?.name ?? null;
+  return pickLatestForChannel(r.tags, channel)?.name ?? null;
 }
 
 async function checkOne(image: string, target: VersionTarget): Promise<UpdateInfo> {
@@ -67,16 +76,20 @@ async function checkOne(image: string, target: VersionTarget): Promise<UpdateInf
   // updateAvailable stays false in that case because comparing a
   // floating tag like `:latest` against a semver is undefined.
   //
+  // The "latest available" is now CHANNEL-AWARE: a beta user is offered a
+  // newer beta OR a newer stable; a stable user only a newer stable; a
+  // dirkwa/master user gets no semver target (their signal is imageState).
+  // We need the identity's channel first, so the GHCR list is fetched after.
+  //
   // `imageState` is the orthogonal image-level signal: computed WITH the
   // GHCR round-trip (checkRemote: true) so it can report 'pull-available'
-  // for a moved rolling tag, which the semver compare above structurally
-  // cannot. Runs in parallel with the semver lookup; failures inside the
-  // drift resolver degrade to 'unknown', never throw here.
-  const [identity, latest, drift] = await Promise.all([
+  // for a moved rolling tag, which the semver compare cannot. This is the
+  // primary "update available" signal for the dirkwa/master channels.
+  const [identity, drift] = await Promise.all([
     getRuntimeIdentity(target),
-    deriveLatestStable(image),
     getImageDrift(target.container, target.quadletName, { checkRemote: true }),
   ]);
+  const latest = await deriveLatestForChannel(image, identity.channel);
   const updateAvailable =
     identity.version !== null && latest !== null && compareSemver(latest, identity.version) > 0;
   return {
