@@ -107,15 +107,18 @@ async function doDoctorSwitch(input: DoctorSwitchInput): Promise<SwitchResult> {
     previousImage = rewrite.previousImage;
     snapshotPath = rewrite.snapshotPath;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    emit({ stage: 'failed', to: input.tag, error: `quadlet rewrite failed: ${msg}` });
+    // Raw exception (may carry host paths) → log only; surface a stable string
+    // (flows to the SSE event and, via recordOutcome, a SignalK notification).
+    const raw = err instanceof Error ? err.message : String(err);
+    console.error(`doctor-switch: quadlet rewrite failed for ${input.tag}: ${raw}`);
+    emit({ stage: 'failed', to: input.tag, error: 'quadlet rewrite failed' });
     return {
       ok: false,
       from: '',
       to: input.tag,
       durationMs: Date.now() - start,
       hooksRun,
-      error: `quadlet rewrite failed: ${msg}`,
+      error: 'quadlet rewrite failed',
     };
   }
 

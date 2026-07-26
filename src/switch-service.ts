@@ -120,11 +120,15 @@ async function doSwitch(input: SwitchInput): Promise<SwitchResult> {
     previousImage = rewrite.previousImage;
     snapshotPath = rewrite.snapshotPath;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    // Don't embed the raw exception (can carry host paths) in the surfaced
+    // error — it flows to the SSE event and, via recordOutcome, to a SignalK
+    // notification. Log the raw detail; surface a stable message.
+    const raw = err instanceof Error ? err.message : String(err);
+    console.error(`switch: quadlet rewrite failed for ${input.tag}: ${raw}`);
     publishSwitchEvent({
       stage: 'failed',
       to: input.tag,
-      error: `quadlet rewrite failed: ${msg}`,
+      error: 'quadlet rewrite failed',
     });
     return {
       ok: false,
@@ -132,7 +136,7 @@ async function doSwitch(input: SwitchInput): Promise<SwitchResult> {
       to: input.tag,
       durationMs: Date.now() - start,
       hooksRun,
-      error: `quadlet rewrite failed: ${msg}`,
+      error: 'quadlet rewrite failed',
     };
   }
 
