@@ -38,11 +38,15 @@ export async function performSwitch(input: SwitchInput): Promise<SwitchResult> {
     // outcome cache — but mutex CONTENTION is not a completed operation, so let
     // MutexBusyError propagate un-recorded to the caller's 409 path.
     if (err instanceof MutexBusyError) throw err;
+    // Store a STABLE, safe message (raw exception text can carry host paths /
+    // low-level detail, and this string is surfaced via updater-status → a
+    // SignalK notification). The raw error still propagates via `throw` to the
+    // route handler, which logs it. Repo rule: userMessage, never raw text.
     recordOutcome({
       operation: 'switch',
       ok: false,
       to: input.tag,
-      error: err instanceof Error ? err.message : 'unknown error',
+      error: `switch to ${input.tag} failed`,
     });
     throw err;
   }

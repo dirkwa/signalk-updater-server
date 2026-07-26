@@ -51,11 +51,13 @@ export async function performDoctorSwitch(input: DoctorSwitchInput): Promise<Swi
   } catch (err) {
     // Thrown failure still recorded; mutex contention propagates un-recorded.
     if (err instanceof MutexBusyError) throw err;
+    // Safe, stable message (surfaced via updater-status → notification); the
+    // raw error still propagates via `throw` and is logged by the route.
     recordOutcome({
       operation: 'doctor-update',
       ok: false,
       to: input.tag,
-      error: err instanceof Error ? err.message : 'unknown error',
+      error: `doctor update to ${input.tag} failed`,
     });
     throw err;
   }
