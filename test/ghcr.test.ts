@@ -175,7 +175,6 @@ describe('listTags — manifest responses without docker-content-digest', () => 
           ),
       },
       {
-        // No docker-content-digest header on this one.
         match: (u) => u.includes('/manifests/broken'),
         respond: () => jsonResponse({ schemaVersion: 2, config: { digest: 'sha256:badcfg' } }),
       },
