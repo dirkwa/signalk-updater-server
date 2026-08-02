@@ -150,6 +150,55 @@ describe('listTags — digest-keyed pushedAt cache', () => {
   });
 });
 
+describe('listTags — manifest responses without docker-content-digest', () => {
+  it('skips the offending tag and keeps well-formed tags', async () => {
+    // Two tags: `good` responds with the digest header, `broken` without.
+    // The digest is the identity everything downstream keys on (pull by
+    // digest, drift comparison, config cache), so a header-less manifest
+    // is treated like a deleted tag mid-scan — skipped, never surfaced
+    // as a Tag with digest '' (issue #152).
+    const calls = installFetchRouter([
+      {
+        match: (u) => u.startsWith('https://ghcr.io/token'),
+        respond: () => jsonResponse({ token: 'fake-token' }),
+      },
+      {
+        match: (u) => u.includes('/tags/list'),
+        respond: () => jsonResponse({ name: 'x/y', tags: ['good', 'broken'] }),
+      },
+      {
+        match: (u) => u.includes('/manifests/good'),
+        respond: () =>
+          jsonResponse(
+            { schemaVersion: 2, config: { digest: 'sha256:goodcfg' } },
+            { 'docker-content-digest': 'sha256:gooddigest' },
+          ),
+      },
+      {
+        // No docker-content-digest header on this one.
+        match: (u) => u.includes('/manifests/broken'),
+        respond: () => jsonResponse({ schemaVersion: 2, config: { digest: 'sha256:badcfg' } }),
+      },
+      {
+        match: (u) => u.includes('/blobs/'),
+        respond: () => jsonResponse({ created: '2026-08-02T00:00:00Z' }),
+      },
+    ]).calls;
+
+    const { listTags } = await import('../src/ghcr.js');
+    const r = await listTags('x/y', { force: true });
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error('unreachable');
+    expect(r.tags.map((t) => t.name)).toEqual(['good']);
+    expect(r.tags[0]?.digest).toBe('sha256:gooddigest');
+    expect(r.tags.some((t) => t.digest === '')).toBe(false);
+    // The broken tag's config blob was never fetched — we bail before
+    // the blob round-trip.
+    const blobCalls = calls.filter((c) => c.url.includes('/blobs/sha256:badcfg')).length;
+    expect(blobCalls).toBe(0);
+  });
+});
+
 describe('listTags — label capture from the config blob', () => {
   function routerWithBlob(blob: unknown) {
     return installFetchRouter([

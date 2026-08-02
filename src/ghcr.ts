@@ -138,15 +138,23 @@ async function fetchTagConfigInfo(
 ): Promise<{ digest: string; info: ConfigInfo }> {
   const { headerDigest, body } = await fetchManifest(image, tag, token);
 
+  // The registry contract (OCI distribution spec) puts the manifest's
+  // content digest in the docker-content-digest header. Without it the
+  // tag can't be pulled by digest, drift-compared, or cache-keyed —
+  // a `Tag.digest === ''` row would be ambiguous everywhere downstream.
+  // Treat the violation like a deleted tag mid-scan: throw, so
+  // fetchTagsConcurrent skips this tag (issue #152).
+  if (!headerDigest) {
+    throw new Error(`manifest for ${tag}: missing docker-content-digest header`);
+  }
+
   // Digest-cache hit: the config is per-digest and immutable, so a tag
   // pointing at a digest we've seen before doesn't need the platform-
   // manifest descent or the blob fetch. Two round-trips saved per
   // cache-hit tag.
-  if (headerDigest) {
-    const cached = configInfoByDigest.get(headerDigest);
-    if (cached !== undefined) {
-      return { digest: headerDigest, info: cached };
-    }
+  const cached = configInfoByDigest.get(headerDigest);
+  if (cached !== undefined) {
+    return { digest: headerDigest, info: cached };
   }
 
   // Within-scan dedup: if another worker is already fetching this
@@ -154,23 +162,28 @@ async function fetchTagConfigInfo(
   // request. Saves N-1 blob roundtrips per shared-digest cluster
   // during a cold scan (typical for releases that touched `:latest`
   // and a semver tag in lockstep).
-  const inFlight = headerDigest ? pendingByDigest.get(headerDigest) : undefined;
+  const inFlight = pendingByDigest.get(headerDigest);
   if (inFlight !== undefined) {
     const info = await inFlight;
     return { digest: headerDigest, info };
   }
 
   const pending = fetchConfigInfo(image, body, token);
-  if (headerDigest) pendingByDigest.set(headerDigest, pending);
-  const info = await pending;
-  if (headerDigest) {
+  pendingByDigest.set(headerDigest, pending);
+  try {
+    const info = await pending;
     // Cache negatives too — a tag we couldn't extract config info from
     // (deleted blob, malformed config, etc.) won't suddenly start
     // working on the next scan, so don't re-fetch every 6h.
     configInfoByDigest.set(headerDigest, info);
+    return { digest: headerDigest, info };
+  } finally {
+    // fetchConfigInfo never rejects today (every failure path resolves
+    // to { pushedAt: null }), but clear the in-flight entry in finally
+    // so a future rejecting implementation can't strand a Promise in
+    // pendingByDigest that every later scan of this digest would await.
     pendingByDigest.delete(headerDigest);
   }
-  return { digest: headerDigest, info };
 }
 
 // Shape checks for label values crossing the HTTP boundary. The config
