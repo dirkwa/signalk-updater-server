@@ -38,9 +38,18 @@ describe('changelogLinkFor', () => {
     expect(changelogLinkFor(tag('latest', 'stable'))).toBeNull();
   });
 
-  it('maps a beta tag to its prerelease page', () => {
+  it('maps a beta tag to its commit listing, not the releases page', () => {
+    // Upstream doesn't create a GitHub Release for every beta tag
+    // (v2.28.0-beta.1 has none), so the releases URL 404s for those;
+    // the tag's commit listing resolves for every pushed tag.
     expect(changelogLinkFor(tag('v2.28.0-beta.2', 'beta'))?.href).toBe(
-      `${UPSTREAM}/releases/tag/v2.28.0-beta.2`,
+      `${UPSTREAM}/commits/v2.28.0-beta.2`,
+    );
+  });
+
+  it('resolves the floating beta tag through the version label', () => {
+    expect(changelogLinkFor(tag('beta', 'beta', { version: '2.28.0-beta.2' }))?.href).toBe(
+      `${UPSTREAM}/commits/v2.28.0-beta.2`,
     );
   });
 
@@ -59,6 +68,10 @@ describe('changelogLinkFor', () => {
 
   it('maps bare master to the branch commit history', () => {
     expect(changelogLinkFor(tag('master', 'master'))?.href).toBe(`${UPSTREAM}/commits/master`);
+  });
+
+  it('returns null for a master tag whose embedded sha is too short to link', () => {
+    expect(changelogLinkFor(tag('master-abcd', 'master'))).toBeNull();
   });
 
   it('links a labeled dirkwa build to its upstream base commit', () => {
