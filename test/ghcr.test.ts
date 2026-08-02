@@ -150,6 +150,101 @@ describe('listTags — digest-keyed pushedAt cache', () => {
   });
 });
 
+describe('listTags — label capture from the config blob', () => {
+  function routerWithBlob(blob: unknown) {
+    return installFetchRouter([
+      {
+        match: (u) => u.startsWith('https://ghcr.io/token'),
+        respond: () => jsonResponse({ token: 'fake-token' }),
+      },
+      {
+        match: (u) => u.includes('/tags/list'),
+        respond: () => jsonResponse({ name: 'x/y', tags: ['dirkwa-dfb1444'] }),
+      },
+      {
+        match: (u) => u.includes('/manifests/'),
+        respond: () =>
+          jsonResponse(
+            { schemaVersion: 2, config: { digest: 'sha256:configblob' } },
+            { 'docker-content-digest': 'sha256:labeled' },
+          ),
+      },
+      {
+        match: (u) => u.includes('/blobs/'),
+        respond: () => jsonResponse(blob),
+      },
+    ]);
+  }
+
+  it('captures whitelisted labels alongside pushedAt', async () => {
+    const baseSha = 'a'.repeat(40);
+    routerWithBlob({
+      created: '2026-08-02T09:00:00Z',
+      config: {
+        Labels: {
+          'org.opencontainers.image.version': '2.30.0',
+          'org.opencontainers.image.revision': 'b'.repeat(40),
+          'io.dirkwa.signalk.base-sha': baseSha,
+          'io.dirkwa.signalk.prs': '2588:7cf1e3b 2524:ef613fa',
+          'org.opencontainers.image.title': 'signalk-server',
+        },
+      },
+    });
+    const { listTags } = await import('../src/ghcr.js');
+    const r = await listTags('x/y', { force: true });
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error('unreachable');
+    expect(r.tags[0]?.pushedAt).toBe('2026-08-02T09:00:00.000Z');
+    expect(r.tags[0]?.labels).toEqual({
+      version: '2.30.0',
+      revision: 'b'.repeat(40),
+      baseSha,
+      prs: '2588:7cf1e3b 2524:ef613fa',
+    });
+  });
+
+  it('drops label values that fail their shape checks', async () => {
+    routerWithBlob({
+      created: '2026-08-02T09:00:00Z',
+      config: {
+        Labels: {
+          'org.opencontainers.image.revision': 'not-a-sha!',
+          'io.dirkwa.signalk.base-sha': '../../etc/passwd',
+          'io.dirkwa.signalk.prs': '<script>alert(1)</script>',
+          'org.opencontainers.image.version': '2.30.0',
+        },
+      },
+    });
+    const { listTags } = await import('../src/ghcr.js');
+    const r = await listTags('x/y', { force: true });
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error('unreachable');
+    expect(r.tags[0]?.labels).toEqual({ version: '2.30.0' });
+  });
+
+  it('omits the labels field entirely when the config has none', async () => {
+    routerWithBlob({ created: '2026-08-02T09:00:00Z', config: {} });
+    const { listTags } = await import('../src/ghcr.js');
+    const r = await listTags('x/y', { force: true });
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error('unreachable');
+    expect(r.tags[0]?.labels).toBeUndefined();
+    expect('labels' in (r.tags[0] ?? {})).toBe(false);
+  });
+
+  it('still extracts labels when created is missing', async () => {
+    routerWithBlob({
+      config: { Labels: { 'org.opencontainers.image.version': '2.30.0' } },
+    });
+    const { listTags } = await import('../src/ghcr.js');
+    const r = await listTags('x/y', { force: true });
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error('unreachable');
+    expect(r.tags[0]?.pushedAt).toBeNull();
+    expect(r.tags[0]?.labels).toEqual({ version: '2.30.0' });
+  });
+});
+
 describe('listTags — bounded concurrency', () => {
   it('runs no more than FETCH_CONCURRENCY (8) manifest fetches simultaneously', async () => {
     // 20 tags, each manifest fetch deliberately slow (resolves on a

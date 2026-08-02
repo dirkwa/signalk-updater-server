@@ -302,6 +302,76 @@ describe('Versions', () => {
     expect(await screen.findByText('Switch progress')).toBeInTheDocument();
   });
 
+  it('links the digest of a pinned stable tag to the upstream release page', async () => {
+    renderVersions();
+    await screen.findByText('v2.24.0');
+    const link = screen.getByTitle(/sha256:aaa111 — release notes/);
+    expect(link).toHaveAttribute(
+      'href',
+      'https://github.com/SignalK/signalk-server/releases/tag/v2.24.0',
+    );
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+  });
+
+  it('renders base and PR links for a labeled dirkwa tag', async () => {
+    const baseSha = 'a'.repeat(40);
+    const labeledDirkwa: VersionsResponse = {
+      cachedAt: new Date().toISOString(),
+      channels: {
+        stable: [],
+        beta: [],
+        master: [],
+        dirkwa: [
+          {
+            name: 'dirkwa-dfb1444',
+            channel: 'dirkwa',
+            digest: 'sha256:labeled1',
+            pushedAt: '2026-08-02T00:00:00Z',
+            isLocal: false,
+            labels: { baseSha, prs: '2588:7cf1e3b 2524:ef613fa' },
+          },
+        ],
+      },
+    };
+    mockFetch({
+      '/api/versions': labeledDirkwa,
+      '/api/state': dirkwaState,
+      '/api/versions/settings': defaultSettings,
+      '/api/updates/available': noUpdates,
+    });
+    renderVersions();
+    await screen.findByText('dirkwa-dfb1444');
+    const pr = screen.getByRole('link', { name: '#2588' });
+    expect(pr).toHaveAttribute('href', 'https://github.com/SignalK/signalk-server/pull/2588');
+    expect(screen.getByRole('link', { name: '#2524' })).toBeInTheDocument();
+    const base = screen.getByTitle('upstream base commit');
+    expect(base).toHaveAttribute(
+      'href',
+      `https://github.com/SignalK/signalk-server/commit/${baseSha}`,
+    );
+    // Digest cell links to the base commit too (never the merge sha).
+    expect(screen.getByTitle(/sha256:labeled1 — upstream base commit/)).toBeInTheDocument();
+  });
+
+  it('links label-less dirkwa digests to build history without base or PR metadata', async () => {
+    mockFetch({
+      '/api/versions': dirkwaVersions,
+      '/api/state': dirkwaState,
+      '/api/versions/settings': defaultSettings,
+      '/api/updates/available': dirkwaUpdates,
+    });
+    renderVersions();
+    await screen.findByText('current');
+    const digest = screen.getByTitle(/sha256:newremote — build history/);
+    expect(digest).toHaveAttribute(
+      'href',
+      'https://github.com/dirkwa/signalk-server-images/commits/main/state/last-dirkwa.txt',
+    );
+    // No stack labels → no base/PR detail line.
+    expect(screen.queryByText(/PRs/)).not.toBeInTheDocument();
+  });
+
   it('treats an absent target as signalk-server (backward compat with pre-discriminator events)', async () => {
     renderVersions();
     await screen.findByText('stable');

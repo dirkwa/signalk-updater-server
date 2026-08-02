@@ -19,6 +19,7 @@ import { useToast } from '../toast';
 import { useConfirm } from '../confirm';
 import { fmtTime, relTime } from '../time';
 import { mergeImageState } from '../image-state';
+import { changelogLinkFor, dirkwaDetails, shortSha } from '../changelog-links';
 import type {
   AnnotatedTag,
   AvailableUpdates,
@@ -531,6 +532,8 @@ function ChannelCard({
               const isCurrent = t.name === currentTag;
               const isLocal = t.isLocal === true;
               const isPulling = pullingTag === t.name;
+              const changelog = changelogLinkFor(t);
+              const stack = dirkwaDetails(t);
               return (
                 <tr key={t.name}>
                   <td>
@@ -543,14 +546,60 @@ function ChannelCard({
                           : 'Newer image on registry for this tag'}
                       </div>
                     ) : null}
+                    {stack ? (
+                      <div className="text-muted small mt-1">
+                        {stack.base ? (
+                          <>
+                            {'base '}
+                            <a
+                              href={stack.base.href}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              title={stack.base.label}
+                            >
+                              <code className="small">{shortSha(t.labels?.baseSha ?? '')}</code>
+                            </a>
+                          </>
+                        ) : null}
+                        {stack.base && stack.prs.length > 0 ? ' · ' : null}
+                        {stack.prs.length > 0 ? (
+                          <>
+                            {'PRs '}
+                            {stack.prs.map((p) => (
+                              <a
+                                key={p.number}
+                                href={p.href}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                title={p.label}
+                                className="me-1"
+                              >
+                                #{p.number}
+                              </a>
+                            ))}
+                          </>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </td>
                   <td className="d-none d-md-table-cell text-muted small">
                     {t.pushedAt ? fmtTime(t.pushedAt) : '—'}
                   </td>
                   <td className="d-none d-md-table-cell">
-                    <code className="small" title={t.digest}>
-                      {shortDigest(t.digest)}
-                    </code>
+                    {changelog ? (
+                      <a
+                        href={changelog.href}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title={`${t.digest} — ${changelog.label}`}
+                      >
+                        <code className="small">{shortDigest(t.digest)}</code>
+                      </a>
+                    ) : (
+                      <code className="small" title={t.digest}>
+                        {shortDigest(t.digest)}
+                      </code>
+                    )}
                   </td>
                   <td>
                     {isLocal ? (
