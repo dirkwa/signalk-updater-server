@@ -155,6 +155,21 @@ export interface DriftReport {
   packages: DriftPackage[];
 }
 
+/** Whitelisted, server-sanitized OCI labels from the image config blob.
+ *  See src/types.ts for the canonical contract. Used by
+ *  changelog-links.ts to derive GitHub changelog URLs. */
+export interface TagLabels {
+  /** org.opencontainers.image.version — upstream semver. */
+  version?: string;
+  /** org.opencontainers.image.revision — hex commit SHA. Unresolvable
+   *  merge commit on the dirkwa channel; never link it there. */
+  revision?: string;
+  /** io.dirkwa.signalk.base-sha — upstream master SHA of a dirkwa stack. */
+  baseSha?: string;
+  /** io.dirkwa.signalk.prs — raw "NUMBER[:sha7] NUMBER[:sha7] ..." list. */
+  prs?: string;
+}
+
 export interface Tag {
   name: string;
   channel: Channel;
@@ -166,6 +181,7 @@ export interface Tag {
    *  contract and the history of why this isn't sourced from GH Packages. */
   pushedAt: string | null;
   size?: number;
+  labels?: TagLabels;
 }
 
 /** Tag plus a server-computed isLocal flag. The /api/versions response

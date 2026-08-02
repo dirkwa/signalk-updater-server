@@ -1,5 +1,26 @@
 export type Channel = 'stable' | 'beta' | 'master' | 'dirkwa';
 
+/** Whitelisted, server-sanitized OCI labels read from the image config
+ *  blob (same blob that supplies `pushedAt`). Each value survives only
+ *  if it matches a strict shape check in src/ghcr.ts — the blob is
+ *  untrusted registry JSON. The webapp derives changelog links from
+ *  these (webapp/src/changelog-links.ts). Absent when the image config
+ *  carried no recognizable labels (all pre-2026-08 dirkwa builds). */
+export interface TagLabels {
+  /** org.opencontainers.image.version — upstream semver. */
+  version?: string;
+  /** org.opencontainers.image.revision — hex commit SHA. For dirkwa
+   *  images this is an ephemeral CI merge commit that resolves in NO
+   *  public repo; never build a GitHub link from it on that channel. */
+  revision?: string;
+  /** io.dirkwa.signalk.base-sha — upstream master SHA a dirkwa stack
+   *  was built on (resolvable in SignalK/signalk-server). */
+  baseSha?: string;
+  /** io.dirkwa.signalk.prs — raw space-separated PR list, entries are
+   *  `NUMBER` or `NUMBER:sha7`, e.g. "2588:7cf1e3b 2524:ef613fa". */
+  prs?: string;
+}
+
 export interface Tag {
   name: string;
   channel: Channel;
@@ -15,6 +36,7 @@ export interface Tag {
    *  for public packages — see src/ghcr.ts for the history. */
   pushedAt: string | null;
   size?: number;
+  labels?: TagLabels;
 }
 
 /** Tag plus a server-computed `isLocal` flag. Returned by GET /api/versions

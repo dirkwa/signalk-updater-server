@@ -1,4 +1,4 @@
-import type { Tag } from './types.js';
+import type { Tag, TagLabels } from './types.js';
 import { classifyChannel } from './tagClassifier.js';
 import { categorizeError, type CategorizedError } from './errors.js';
 
@@ -10,23 +10,30 @@ interface CacheEntry {
 const cache = new Map<string, CacheEntry>();
 const TTL_MS = 6 * 60 * 60 * 1000;
 
-// Digest-keyed cache of the `created` timestamp from each image's OCI
+/** What we keep from one image config blob: the build timestamp plus
+ *  the sanitized label subset. One fetch yields both. */
+interface ConfigInfo {
+  pushedAt: string | null;
+  labels?: TagLabels;
+}
+
+// Digest-keyed cache of the info extracted from each image's OCI
 // config blob. The blob is content-addressed by digest and immutable,
 // so two tags pointing at the same digest (e.g. `:latest` + `:0.6.11`
-// after a release) share the same pushedAt — we only need to fetch the
+// after a release) share the same config — we only need to fetch the
 // blob once per unique digest, ever. Stays valid across the listTags
 // per-image TTL (which only governs the tag→digest mapping, not the
-// blob behind a digest). Memory footprint is negligible: ~200 bytes
+// blob behind a digest). Memory footprint is negligible: ~500 bytes
 // per entry, a few hundred entries total even after years of releases.
-const pushedAtByDigest = new Map<string, string | null>();
+const configInfoByDigest = new Map<string, ConfigInfo>();
 
 // In-flight fetches keyed by digest. When two parallel workers both
 // see the same digest mid-scan and neither has populated the cache
 // yet, the first one's Promise lives here so the second worker can
 // await it instead of re-fetching the same blob. Cleared from the
 // map once the Promise settles (the resolved value lives in
-// `pushedAtByDigest`).
-const pendingByDigest = new Map<string, Promise<string | null>>();
+// `configInfoByDigest`).
+const pendingByDigest = new Map<string, Promise<ConfigInfo>>();
 
 // Bounded-concurrency knob for the per-tag manifest+blob fan-out. GHCR's
 // anonymous rate-limit is ~5000 req/h, so 8 in-flight is well under
@@ -102,42 +109,44 @@ async function fetchManifest(
   return { headerDigest, body };
 }
 
-/** Fetch the `created` timestamp from an image's OCI config blob.
+/** Fetch the `created` timestamp and the whitelisted labels from an
+ *  image's OCI config blob.
  *
- *  This is the timestamp written by buildx into the image config at
- *  build time (RFC3339, e.g. `2026-05-22T09:43:58.595Z`). It's per
+ *  `created` is the timestamp written by buildx into the image config
+ *  at build time (RFC3339, e.g. `2026-05-22T09:43:58.595Z`). It's per
  *  digest, available unauthenticated via the same anonymous bearer
  *  we already hold, and survives the GH Packages REST API's
  *  "authentication required even for public packages" quirk that
  *  PR #73's prior implementation didn't catch — that one used the
  *  Packages API and silently 401'd, leaving every tag with no
  *  publish date in the UI ("—" everywhere on the Versions tab).
+ *  The labels ride the same blob under `config.Labels`, so capturing
+ *  them costs zero extra requests.
  *
  *  For multi-arch images the top-level manifest is an index/list with
  *  no `config`; we descend into the amd64/linux platform manifest
  *  (falling back to the first listed platform) and read THAT
- *  manifest's config. Same `created` for all platforms in practice
- *  since buildx tags them together.
+ *  manifest's config. Same `created`/labels for all platforms in
+ *  practice since buildx stamps them together.
  *
- *  Returns null on any failure — caller treats null as "unknown
+ *  pushedAt is null on any failure — caller treats null as "unknown
  *  publish date" and the UI renders an em dash. */
-async function fetchTagPublishedAt(
+async function fetchTagConfigInfo(
   image: string,
   tag: string,
   token: string,
-): Promise<{ digest: string; pushedAt: string | null }> {
+): Promise<{ digest: string; info: ConfigInfo }> {
   const { headerDigest, body } = await fetchManifest(image, tag, token);
 
-  // Digest-cache hit: pushedAt is per-digest and immutable, so a tag
+  // Digest-cache hit: the config is per-digest and immutable, so a tag
   // pointing at a digest we've seen before doesn't need the platform-
   // manifest descent or the blob fetch. Two round-trips saved per
   // cache-hit tag.
-  if (headerDigest && pushedAtByDigest.has(headerDigest)) {
-    const cached = pushedAtByDigest.get(headerDigest);
-    // `cached` is `string | null | undefined` under noUncheckedIndexedAccess;
-    // the prior `has()` guarantees `string | null`, but coerce explicitly
-    // so the narrowing is visible to the reader.
-    return { digest: headerDigest, pushedAt: cached ?? null };
+  if (headerDigest) {
+    const cached = configInfoByDigest.get(headerDigest);
+    if (cached !== undefined) {
+      return { digest: headerDigest, info: cached };
+    }
   }
 
   // Within-scan dedup: if another worker is already fetching this
@@ -147,28 +156,55 @@ async function fetchTagPublishedAt(
   // and a semver tag in lockstep).
   const inFlight = headerDigest ? pendingByDigest.get(headerDigest) : undefined;
   if (inFlight !== undefined) {
-    const pushedAt = await inFlight;
-    return { digest: headerDigest, pushedAt };
+    const info = await inFlight;
+    return { digest: headerDigest, info };
   }
 
-  const pending = fetchPushedAt(image, body, token);
+  const pending = fetchConfigInfo(image, body, token);
   if (headerDigest) pendingByDigest.set(headerDigest, pending);
-  const pushedAt = await pending;
+  const info = await pending;
   if (headerDigest) {
-    // Cache negatives too — a tag we couldn't extract pushedAt from
+    // Cache negatives too — a tag we couldn't extract config info from
     // (deleted blob, malformed config, etc.) won't suddenly start
     // working on the next scan, so don't re-fetch every 6h.
-    pushedAtByDigest.set(headerDigest, pushedAt);
+    configInfoByDigest.set(headerDigest, info);
     pendingByDigest.delete(headerDigest);
   }
-  return { digest: headerDigest, pushedAt };
+  return { digest: headerDigest, info };
 }
 
-async function fetchPushedAt(
+// Shape checks for label values crossing the HTTP boundary. The config
+// blob is untrusted registry JSON — a value that doesn't match its
+// expected shape is dropped, never passed through. The webapp builds
+// hrefs from these, so the whitelist doubles as URL-injection defense.
+const SHA_RE = /^[0-9a-f]{7,40}$/i;
+const PRS_RE = /^\d{1,6}(:[0-9a-f]{7,40})?( \d{1,6}(:[0-9a-f]{7,40})?)*$/i;
+const VERSION_RE = /^[0-9A-Za-z.+_-]{1,100}$/;
+
+function sanitizeLabels(rawLabels: unknown): TagLabels | undefined {
+  if (typeof rawLabels !== 'object' || rawLabels === null) return undefined;
+  const rec = rawLabels as Record<string, unknown>;
+  const pick = (key: string, re: RegExp, maxLen: number): string | undefined => {
+    const v = rec[key];
+    return typeof v === 'string' && v.length <= maxLen && re.test(v) ? v : undefined;
+  };
+  const labels: TagLabels = {};
+  const version = pick('org.opencontainers.image.version', VERSION_RE, 100);
+  const revision = pick('org.opencontainers.image.revision', SHA_RE, 40);
+  const baseSha = pick('io.dirkwa.signalk.base-sha', SHA_RE, 40);
+  const prs = pick('io.dirkwa.signalk.prs', PRS_RE, 512);
+  if (version !== undefined) labels.version = version;
+  if (revision !== undefined) labels.revision = revision;
+  if (baseSha !== undefined) labels.baseSha = baseSha;
+  if (prs !== undefined) labels.prs = prs;
+  return Object.keys(labels).length > 0 ? labels : undefined;
+}
+
+async function fetchConfigInfo(
   image: string,
   topManifest: ManifestResponse,
   token: string,
-): Promise<string | null> {
+): Promise<ConfigInfo> {
   let platformManifest: ManifestResponse = topManifest;
   // Index → pick a platform manifest. amd64/linux preferred; first as fallback.
   if (Array.isArray(topManifest.manifests) && topManifest.manifests.length > 0) {
@@ -176,37 +212,47 @@ async function fetchPushedAt(
       topManifest.manifests.find(
         (m) => m.platform?.architecture === 'amd64' && m.platform?.os === 'linux',
       ) ?? topManifest.manifests[0];
-    if (!preferred) return null;
+    if (!preferred) return { pushedAt: null };
     try {
       const platform = await fetchManifest(image, preferred.digest, token);
       platformManifest = platform.body;
     } catch {
-      return null;
+      return { pushedAt: null };
     }
   }
   const configDigest = platformManifest.config?.digest;
-  if (!configDigest) return null;
+  if (!configDigest) return { pushedAt: null };
   try {
     // fetch() follows 302 redirects to the blob storage CDN by default.
     const blobRes = await fetch(`https://ghcr.io/v2/${image}/blobs/${configDigest}`, {
       headers: { authorization: `Bearer ${token}` },
     });
-    if (!blobRes.ok) return null;
+    if (!blobRes.ok) return { pushedAt: null };
     // Narrow at the HTTP boundary — the blob is untrusted JSON, so we
     // refuse to let an arbitrary string cross into Tag.pushedAt and
     // poison downstream sorts / fmtTime calls. Parse with Date.parse
     // and re-emit canonical ISO8601 so the wire shape is uniform.
     const raw: unknown = await blobRes.json();
-    const created =
-      typeof raw === 'object' && raw !== null
-        ? (raw as Record<string, unknown>).created
+    if (typeof raw !== 'object' || raw === null) return { pushedAt: null };
+    const rec = raw as Record<string, unknown>;
+    const created = rec.created;
+    let pushedAt: string | null = null;
+    if (typeof created === 'string') {
+      const ms = Date.parse(created);
+      if (!Number.isNaN(ms)) pushedAt = new Date(ms).toISOString();
+    }
+    // Labels live under the lowercase `config` object's `Labels` key
+    // (OCI image config schema). Same untrusted-JSON posture as
+    // `created`: whitelisted keys, strict shape checks, drop the rest.
+    const config = rec.config;
+    const rawLabels =
+      typeof config === 'object' && config !== null
+        ? (config as Record<string, unknown>).Labels
         : undefined;
-    if (typeof created !== 'string') return null;
-    const ms = Date.parse(created);
-    if (Number.isNaN(ms)) return null;
-    return new Date(ms).toISOString();
+    const labels = sanitizeLabels(rawLabels);
+    return labels ? { pushedAt, labels } : { pushedAt };
   } catch {
-    return null;
+    return { pushedAt: null };
   }
 }
 
@@ -265,8 +311,14 @@ async function fetchTagsConcurrent(image: string, names: string[], token: string
       const name = names[i];
       if (name === undefined) return;
       try {
-        const { digest, pushedAt } = await fetchTagPublishedAt(image, name, token);
-        results[i] = { name, channel: classifyChannel(name), digest, pushedAt };
+        const { digest, info } = await fetchTagConfigInfo(image, name, token);
+        results[i] = {
+          name,
+          channel: classifyChannel(name),
+          digest,
+          pushedAt: info.pushedAt,
+          ...(info.labels ? { labels: info.labels } : {}),
+        };
       } catch {
         // skip tags we can't fetch manifests for (e.g. deleted)
       }
@@ -335,6 +387,6 @@ export function clearListTagsCache(image?: string): void {
 
 export function __resetGhcrCacheForTests(): void {
   cache.clear();
-  pushedAtByDigest.clear();
+  configInfoByDigest.clear();
   pendingByDigest.clear();
 }
