@@ -19,7 +19,8 @@ const IMAGES_REPO = 'https://github.com/dirkwa/signalk-server-images';
 
 const SHA_RE = /^[0-9a-f]{7,40}$/i;
 const SEMVER_TAG_RE = /^v?(\d+\.\d+\.\d+(?:-(?:beta|rc)\.\d+)?)$/i;
-const MASTER_TAG_RE = /^(?:master|main)-([0-9a-f]{4,40})$/i;
+// Keep embedded master SHAs aligned with SHA_RE before building a link.
+const MASTER_TAG_RE = /^(?:master|main)-([0-9a-f]{7,40})$/i;
 const PR_ENTRY_RE = /^(\d{1,6})(?::[0-9a-f]{7,40})?$/i;
 
 export interface ChangelogLink {
@@ -41,6 +42,17 @@ function releaseLink(version: string): ChangelogLink | null {
   return { href: `${UPSTREAM_REPO}/releases/tag/v${m[1]}`, label: 'release notes' };
 }
 
+// The commit listing behind a tag ref. Unlike the releases page this
+// resolves for EVERY pushed tag: upstream doesn't create a GitHub
+// Release for every beta tag (v2.28.0-beta.1, v2.24.0-beta.1/2 have
+// none), so /releases/tag/<beta> 404s roughly a third of the time
+// while /commits/<tag> always works and still reads as a changelog.
+function tagCommitsLink(version: string): ChangelogLink | null {
+  const m = version.match(SEMVER_TAG_RE);
+  if (!m || m[1] === undefined) return null;
+  return { href: `${UPSTREAM_REPO}/commits/v${m[1]}`, label: 'tag commit history' };
+}
+
 function commitLink(sha: string, label = 'upstream commit'): ChangelogLink | null {
   if (!SHA_RE.test(sha)) return null;
   return { href: `${UPSTREAM_REPO}/commit/${sha}`, label };
@@ -51,11 +63,11 @@ function commitLink(sha: string, label = 'upstream commit'): ChangelogLink | nul
 export function changelogLinkFor(tag: Tag): ChangelogLink | null {
   const labels = tag.labels;
   switch (tag.channel) {
-    case 'stable':
-    case 'beta': {
-      // Pinned semver tags (v2.30.0, 2.28.0-beta.2) map straight to the
-      // upstream release page — that IS the changelog. Floating refs
-      // (latest, beta) fall back to the version label, then the commit.
+    case 'stable': {
+      // Pinned semver tags (v2.30.0) map straight to the upstream
+      // release page — that IS the changelog, and every stable the
+      // builder ships (MIN_VERSION 2.27.0) has one. Floating `latest`
+      // falls back to the version label, then the commit.
       const fromName = releaseLink(tag.name);
       if (fromName) return fromName;
       if (labels?.version) {
@@ -64,6 +76,20 @@ export function changelogLinkFor(tag: Tag): ChangelogLink | null {
       }
       // A value failing its shape check falls through to the next
       // derivation rather than killing the link outright.
+      const fromRevision = labels?.revision ? commitLink(labels.revision) : null;
+      if (fromRevision) return fromRevision;
+      return null;
+    }
+    case 'beta': {
+      // Betas use the tag's commit listing, not the releases page —
+      // see tagCommitsLink for why (release objects are unreliable
+      // for beta tags).
+      const fromName = tagCommitsLink(tag.name);
+      if (fromName) return fromName;
+      if (labels?.version) {
+        const fromLabel = tagCommitsLink(labels.version);
+        if (fromLabel) return fromLabel;
+      }
       const fromRevision = labels?.revision ? commitLink(labels.revision) : null;
       if (fromRevision) return fromRevision;
       return null;
