@@ -92,6 +92,21 @@ export async function startUnit(unit: string): Promise<void> {
   await call('StartUnit', 'ss', [unit, 'replace']);
 }
 
+/**
+ * Clear a unit's `failed` state — the DBus equivalent of
+ * `systemctl --user reset-failed <unit>`. Needed before starting
+ * signalk-server: on Quadlets rendered before signalk-universal-installer
+ * #235 dropped the start-limit guard, five starts in 30 minutes park the
+ * unit in `failed (start-limit-hit)` and systemd then refuses every start
+ * request until the latch is cleared. Crucially, `StartUnit` does NOT
+ * surface the refusal — the DBus call only enqueues a job and returns
+ * success; the job is what gets refused. A no-op on a unit that is not
+ * failed.
+ */
+export async function resetFailedUnit(unit: string): Promise<void> {
+  await call('ResetFailedUnit', 's', [unit]);
+}
+
 export async function stopUnit(unit: string): Promise<void> {
   await call('StopUnit', 'ss', [unit, 'replace']);
 }
