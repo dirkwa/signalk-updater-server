@@ -2,6 +2,7 @@ import { safe } from './podman/client.js';
 import { rewriteQuadletImage, writeLastGood } from './quadlet/rewriter.js';
 import {
   daemonReload,
+  isSafeToStop,
   startUnit,
   stopUnitAndWait,
   waitWhileActivating,
@@ -194,15 +195,25 @@ async function doDoctorSwitch(input: DoctorSwitchInput): Promise<SwitchResult> {
   // podman's global storage lock. Wait for the start to settle, then re-check.
   if (!healthy) {
     const settled = await waitWhileActivating(DOCTOR_UNIT);
-    // Still `activating` means waitWhileActivating hit its OWN deadline — the
-    // container create is genuinely still running. Rolling back here would do
-    // exactly the damage this block exists to avoid, so bail out without
-    // touching the unit or the Quadlet. Mirrors switch-service.ts.
-    if (settled === 'activating') {
+    if (settled === 'active') {
+      emit({
+        stage: 'health-poll',
+        to: input.tag,
+        from: previousImage,
+        message: 'Container finished starting after the poll window; re-checking health…',
+      });
+      // No allowSelfSigned: the doctor's probe is plain http (see
+      // PollHealthOptions), so this matches the first poll's options exactly.
+      healthy = await pollHealth(healthUrl, POST_SETTLE_HEALTH_TIMEOUT_MS);
+    } else if (!isSafeToStop(settled)) {
+      // Not provably settled — `activating` (create still running) or `unknown`
+      // (the DBus query itself failed). Rolling back on either risks stopping a
+      // unit mid-container-create. Bail without touching the unit or the
+      // Quadlet. Mirrors switch-service.ts.
       const stuckError =
-        `signalk-doctor-server was still starting after ${timeoutMs}ms of health ` +
-        `polling and had not settled; left running on ${input.tag} rather than ` +
-        `interrupting container creation`;
+        `signalk-doctor-server did not reach a settled state after ${timeoutMs}ms ` +
+        `of health polling (systemd reports "${settled}"); left alone on ` +
+        `${input.tag} rather than risk interrupting container creation`;
       emit({
         stage: 'failed',
         to: input.tag,
@@ -218,17 +229,6 @@ async function doDoctorSwitch(input: DoctorSwitchInput): Promise<SwitchResult> {
         error: stuckError,
         rolledBack: false,
       };
-    }
-    if (settled === 'active') {
-      emit({
-        stage: 'health-poll',
-        to: input.tag,
-        from: previousImage,
-        message: 'Container finished starting after the poll window; re-checking health…',
-      });
-      // No allowSelfSigned: the doctor's probe is plain http (see
-      // PollHealthOptions), so this matches the first poll's options exactly.
-      healthy = await pollHealth(healthUrl, POST_SETTLE_HEALTH_TIMEOUT_MS);
     }
   }
 

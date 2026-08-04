@@ -177,6 +177,25 @@ function encodeUnitPath(unit: string): string {
  * real `getActiveState` and quietly query the host's systemd — so the reader is
  * injected rather than closed over. Production callers pass nothing.
  */
+/**
+ * Is it safe to STOP a unit sitting in this ActiveState?
+ *
+ * Deliberately an ALLOWLIST of states that prove the start is over, not
+ * "anything except activating". `getActiveState` returns `unknown` whenever the
+ * busctl call itself fails, so a transient DBus hiccup during a switch would
+ * otherwise read as permission to stop a unit that is still mid-container-
+ * create — the precise sequence that SIGKILLs `podman run` and wedges the
+ * host's c/storage lock. Any future systemd state we do not recognise lands on
+ * the cautious side for the same reason.
+ *
+ * The asymmetry justifies the caution: leaving a bad image running is
+ * recoverable from the Doctor Console or `signalk-recovery`, while a wedged
+ * podman needs SSH. When the state is not provably settled, do not stop.
+ */
+export function isSafeToStop(state: string): boolean {
+  return state === 'failed' || state === 'inactive' || state === 'deactivating';
+}
+
 export async function waitWhileActivating(
   unit: string,
   timeoutMs = 330_000,

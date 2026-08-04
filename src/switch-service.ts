@@ -2,6 +2,7 @@ import { safe } from './podman/client.js';
 import { rewriteQuadletImage, writeLastGood } from './quadlet/rewriter.js';
 import {
   daemonReload,
+  isSafeToStop,
   startUnit,
   stopUnitAndWait,
   waitWhileActivating,
@@ -250,19 +251,29 @@ async function doSwitch(input: SwitchInput): Promise<SwitchResult> {
   // health one more (much shorter) window before giving up.
   if (!healthy) {
     const settled = await waitWhileActivating(SIGNALK_UNIT);
-    // Still `activating` means waitWhileActivating hit its OWN deadline, not
-    // that the start failed — the container create is genuinely still running.
-    // Rolling back here would do precisely the damage this block exists to
-    // avoid, so bail out WITHOUT touching the unit or the Quadlet. Hands off is
-    // the only coherent answer: if we are not confident enough to stop the
-    // start, we are not confident enough to call the image bad either. The
-    // operator gets a clear, non-rolled-back failure and can decide once the
-    // unit settles.
-    if (settled === 'activating') {
+    if (settled === 'active') {
+      publishSwitchEvent({
+        stage: 'health-poll',
+        to: input.tag,
+        from: previousImage,
+        message: 'Container finished starting after the poll window; re-checking health…',
+      });
+      healthy = await pollHealth(healthUrl, POST_SETTLE_HEALTH_TIMEOUT_MS, {
+        allowSelfSigned: true,
+      });
+    } else if (!isSafeToStop(settled)) {
+      // Not provably settled. `activating` means waitWhileActivating hit its
+      // OWN deadline and the container create is still running; `unknown` means
+      // the DBus query itself failed and we simply do not know. Rolling back on
+      // either would do exactly the damage this block exists to avoid, so bail
+      // out WITHOUT touching the unit or the Quadlet. Hands off is the only
+      // coherent answer: if we are not confident enough to stop the start, we
+      // are not confident enough to call the image bad and revert the tag
+      // either. The operator gets a clear, non-rolled-back failure.
       const stuckError =
-        `signalk-server was still starting after ${timeoutMs}ms of health polling ` +
-        `and had not settled; left running on ${input.tag} rather than interrupting ` +
-        `container creation`;
+        `signalk-server did not reach a settled state after ${timeoutMs}ms of ` +
+        `health polling (systemd reports "${settled}"); left alone on ${input.tag} ` +
+        `rather than risk interrupting container creation`;
       publishSwitchEvent({
         stage: 'failed',
         to: input.tag,
@@ -278,17 +289,6 @@ async function doSwitch(input: SwitchInput): Promise<SwitchResult> {
         error: stuckError,
         rolledBack: false,
       };
-    }
-    if (settled === 'active') {
-      publishSwitchEvent({
-        stage: 'health-poll',
-        to: input.tag,
-        from: previousImage,
-        message: 'Container finished starting after the poll window; re-checking health…',
-      });
-      healthy = await pollHealth(healthUrl, POST_SETTLE_HEALTH_TIMEOUT_MS, {
-        allowSelfSigned: true,
-      });
     }
   }
 

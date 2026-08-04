@@ -20,12 +20,19 @@ const mockDaemonReload = vi.fn();
 const mockStartUnit = vi.fn();
 const mockStopUnitAndWait = vi.fn();
 const mockWaitWhileActivating = vi.fn();
-vi.mock('../src/dbus/systemd-user.js', () => ({
-  daemonReload: () => mockDaemonReload(),
-  startUnit: (u: string) => mockStartUnit(u),
-  stopUnitAndWait: (u: string) => mockStopUnitAndWait(u),
-  waitWhileActivating: (u: string) => mockWaitWhileActivating(u),
-}));
+// isSafeToStop is taken from the REAL module, not stubbed: the allowlist it
+// encodes is the thing under test here. Stubbing it would let these tests pass
+// against a gate that treats `unknown` as safe.
+vi.mock('../src/dbus/systemd-user.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/dbus/systemd-user.js')>();
+  return {
+    isSafeToStop: actual.isSafeToStop,
+    daemonReload: () => mockDaemonReload(),
+    startUnit: (u: string) => mockStartUnit(u),
+    stopUnitAndWait: (u: string) => mockStopUnitAndWait(u),
+    waitWhileActivating: (u: string) => mockWaitWhileActivating(u),
+  };
+});
 
 const mockRewriteQuadletImage = vi.fn();
 const mockWriteLastGood = vi.fn();
@@ -108,13 +115,31 @@ describe('performSwitch — activation gate before rollback', () => {
 
     expect(result.ok).toBe(false);
     expect(result.rolledBack).toBe(false);
-    expect(result.error).toMatch(/still starting/i);
+    // The message must name the state systemd actually reported, so an
+    // operator reading it knows whether to wait or to investigate.
+    expect(result.error).toMatch(/did not reach a settled state/i);
+    expect(result.error).toContain('activating');
     // Both flows deliberately stop the unit ONCE in the normal restart
     // sequence before starting the new image. What must never happen is a
     // SECOND stop from the rollback path, landing on a live container create.
     expect(mockStopUnitAndWait).toHaveBeenCalledTimes(1);
     // And the Quadlet is left on the new tag — we are not confident enough to
     // stop the start, so we are not confident enough to revert it either.
+    expect(mockRewriteQuadletImage).toHaveBeenCalledTimes(1);
+  });
+
+  // getActiveState returns 'unknown' whenever the busctl call itself fails. A
+  // transient DBus hiccup must not be read as permission to stop a unit that
+  // may still be mid-container-create.
+  it('does not stop the unit when the state cannot be determined', async () => {
+    const { performSwitch } = await import('../src/switch-service.js');
+    mockWaitWhileActivating.mockResolvedValue('unknown');
+
+    const result = await performSwitch({ tag: 'new' });
+
+    expect(result.ok).toBe(false);
+    expect(result.rolledBack).toBe(false);
+    expect(mockStopUnitAndWait).toHaveBeenCalledTimes(1);
     expect(mockRewriteQuadletImage).toHaveBeenCalledTimes(1);
   });
 
@@ -133,6 +158,16 @@ describe('performSwitch — activation gate before rollback', () => {
     // Quadlet rewritten twice: once to the new tag, once back to the old.
     expect(mockRewriteQuadletImage).toHaveBeenCalledTimes(2);
   });
+
+  it('rolls back from inactive too — the start is provably over', async () => {
+    const { performSwitch } = await import('../src/switch-service.js');
+    mockWaitWhileActivating.mockResolvedValue('inactive');
+
+    const result = await performSwitch({ tag: 'new' });
+
+    expect(result.rolledBack).toBe(true);
+    expect(mockStopUnitAndWait).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('performDoctorSwitch — activation gate before rollback', () => {
@@ -146,7 +181,22 @@ describe('performDoctorSwitch — activation gate before rollback', () => {
 
     expect(result.ok).toBe(false);
     expect(result.rolledBack).toBe(false);
-    expect(result.error).toMatch(/still starting/i);
+    // The message must name the state systemd actually reported, so an
+    // operator reading it knows whether to wait or to investigate.
+    expect(result.error).toMatch(/did not reach a settled state/i);
+    expect(result.error).toContain('activating');
+    expect(mockStopUnitAndWait).toHaveBeenCalledTimes(1);
+    expect(mockRewriteQuadletImage).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not stop the unit when the state cannot be determined', async () => {
+    const { performDoctorSwitch } = await import('../src/doctor-switch-service.js');
+    mockWaitWhileActivating.mockResolvedValue('unknown');
+
+    const result = await performDoctorSwitch({ tag: 'new' });
+
+    expect(result.ok).toBe(false);
+    expect(result.rolledBack).toBe(false);
     expect(mockStopUnitAndWait).toHaveBeenCalledTimes(1);
     expect(mockRewriteQuadletImage).toHaveBeenCalledTimes(1);
   });
