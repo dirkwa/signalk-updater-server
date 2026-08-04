@@ -117,12 +117,26 @@ export async function trialRun(
  * i.e. the *application* to be serving, which for signalk-server is well
  * after the container process has started (30+ plugins to load on a cold
  * boat install). It is deliberately generous and is NOT the same thing as
- * the Quadlet's `TimeoutStartSec` (that bounds container *start*, a much
- * earlier event). 180s comfortably covers a healthy cold start; a probe
- * that's still failing at the deadline means the image is genuinely
- * unhealthy, not slow.
+ * the Quadlet's `TimeoutStartSec`.
+ *
+ * Do NOT assume container start is "a much earlier event" that has already
+ * finished by the time this clock runs out. It often has not: `startUnit` only
+ * enqueues a job, and on an SD-card host `podman run --replace` can spend most
+ * of its 300s TimeoutStartSec budget just CREATING the container. This 180s
+ * deadline can therefore expire while systemd is still legitimately starting
+ * the unit, so an expiry here does not by itself mean the image is unhealthy.
+ * Callers must confirm the unit has left `activating` (see
+ * `waitWhileActivating`) before treating a timeout as failure — rolling back
+ * mid-create SIGKILLs podman and wedges the host's storage lock.
  */
 export const DEFAULT_HEALTH_TIMEOUT_MS = 180_000;
+
+/**
+ * Second, shorter health window granted after a unit turns out to have still
+ * been `activating` when DEFAULT_HEALTH_TIMEOUT_MS expired. By then the
+ * container is up, so this only covers the app's own startup, not the create.
+ */
+export const POST_SETTLE_HEALTH_TIMEOUT_MS = 60_000;
 
 export interface PollHealthProgress {
   elapsedMs: number;

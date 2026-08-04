@@ -1,9 +1,20 @@
 import { safe } from './podman/client.js';
 import { rewriteQuadletImage, writeLastGood } from './quadlet/rewriter.js';
-import { daemonReload, startUnit, stopUnitAndWait } from './dbus/systemd-user.js';
+import {
+  daemonReload,
+  startUnit,
+  stopUnitAndWait,
+  waitWhileActivating,
+} from './dbus/systemd-user.js';
 import { withMutex, MutexBusyError } from './mutex.js';
 import { preSwitchBackup, type BackupResult } from './backup.js';
-import { DEFAULT_HEALTH_TIMEOUT_MS, pollHealth, pullImage, trialRun } from './container-ops.js';
+import {
+  DEFAULT_HEALTH_TIMEOUT_MS,
+  POST_SETTLE_HEALTH_TIMEOUT_MS,
+  pollHealth,
+  pullImage,
+  trialRun,
+} from './container-ops.js';
 import { publishSwitchEvent } from './switch-progress-broker.js';
 import { refreshDoctorDrift } from './drift-client.js';
 import { pruneOldImagesFor } from './image-retention.js';
@@ -212,7 +223,7 @@ async function doSwitch(input: SwitchInput): Promise<SwitchResult> {
   });
   const timeoutMs = input.healthTimeoutMs ?? DEFAULT_HEALTH_TIMEOUT_MS;
   const healthUrl = await resolveSignalkHealthUrl();
-  const healthy = await pollHealth(healthUrl, timeoutMs, {
+  let healthy = await pollHealth(healthUrl, timeoutMs, {
     // signalk-server's SSL plugin redirects :80/signalk to a self-signed
     // https endpoint; accept it on this local liveness probe (see
     // pollHealth's PollHealthOptions doc).
@@ -229,6 +240,29 @@ async function doSwitch(input: SwitchInput): Promise<SwitchResult> {
       });
     },
   });
+  // An expired health poll does NOT prove the switch failed: `startUnit` only
+  // enqueues a job, and the server Quadlet budgets TimeoutStartSec=300 for a
+  // slow SD-card container create against our 180s poll. The unit can still be
+  // `activating` right now. Rolling back in that window is what turns a failed
+  // switch into a wedged host — systemd SIGTERMs `podman run` mid-create, then
+  // SIGKILLs it, and the orphaned incomplete overlay layer blocks the global
+  // c/storage lock until someone SSHes in. Let the start settle, then give
+  // health one more (much shorter) window before giving up.
+  if (!healthy) {
+    const settled = await waitWhileActivating(SIGNALK_UNIT);
+    if (settled === 'active') {
+      publishSwitchEvent({
+        stage: 'health-poll',
+        to: input.tag,
+        from: previousImage,
+        message: 'Container finished starting after the poll window; re-checking health…',
+      });
+      healthy = await pollHealth(healthUrl, POST_SETTLE_HEALTH_TIMEOUT_MS, {
+        allowSelfSigned: true,
+      });
+    }
+  }
+
   if (!healthy) {
     publishSwitchEvent({
       stage: 'rolling-back',

@@ -149,6 +149,48 @@ function encodeUnitPath(unit: string): string {
  * start. Times out after `timeoutMs` (default 30s, which is generous
  * for a 10s SIGTERM grace + container teardown).
  */
+/**
+ * Block while a unit is still `activating`, resolving once it settles (or the
+ * deadline passes). Returns the final ActiveState.
+ *
+ * Call this before stopping a unit you did not just watch start. `startUnit`
+ * only ENQUEUES a job — it returns when systemd accepts the request, not when
+ * the unit is up — so a health poll runs concurrently with systemd's own start
+ * budget rather than after it. signalk-server's Quadlet allows
+ * TimeoutStartSec=300 for a slow SD-card container create, which outlasts
+ * DEFAULT_HEALTH_TIMEOUT_MS; the poll can therefore expire while the start is
+ * still perfectly legal.
+ *
+ * Stopping a unit in that window is what makes this dangerous rather than
+ * merely wrong: systemd SIGTERMs `podman run` mid-container-create and SIGKILLs
+ * it at TimeoutStopSec. The half-written container layer survives as an
+ * `incomplete` layer whose overlayfs mount is still live, podman's own cleanup
+ * spins on it holding the global c/storage lock, and every later podman command
+ * blocks — the host needs `signalk-recovery unwedge-podman` over SSH. Waiting
+ * for the unit to settle keeps a failed switch a failed switch.
+ *
+ * Default 330s clears the 300s TimeoutStartSec the installer renders, so a
+ * create that is merely slow is never mistaken for a hung one.
+ *
+ * `readState` exists as an explicit test seam. `vi.mock` on this module's
+ * exports cannot intercept an intra-module call — the loop would keep using the
+ * real `getActiveState` and quietly query the host's systemd — so the reader is
+ * injected rather than closed over. Production callers pass nothing.
+ */
+export async function waitWhileActivating(
+  unit: string,
+  timeoutMs = 330_000,
+  readState: (u: string) => Promise<string> = getActiveState,
+): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  let state = await readState(unit);
+  while (state === 'activating' && Date.now() < deadline) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 500));
+    state = await readState(unit);
+  }
+  return state;
+}
+
 export async function stopUnitAndWait(unit: string, timeoutMs = 30_000): Promise<void> {
   await stopUnit(unit);
   const deadline = Date.now() + timeoutMs;

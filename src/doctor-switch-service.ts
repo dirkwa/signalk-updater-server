@@ -1,8 +1,19 @@
 import { safe } from './podman/client.js';
 import { rewriteQuadletImage, writeLastGood } from './quadlet/rewriter.js';
-import { daemonReload, startUnit, stopUnitAndWait } from './dbus/systemd-user.js';
+import {
+  daemonReload,
+  startUnit,
+  stopUnitAndWait,
+  waitWhileActivating,
+} from './dbus/systemd-user.js';
 import { withMutex, MutexBusyError } from './mutex.js';
-import { DEFAULT_HEALTH_TIMEOUT_MS, pollHealth, pullImage, trialRun } from './container-ops.js';
+import {
+  DEFAULT_HEALTH_TIMEOUT_MS,
+  POST_SETTLE_HEALTH_TIMEOUT_MS,
+  pollHealth,
+  pullImage,
+  trialRun,
+} from './container-ops.js';
 import { invalidate as invalidateUpdatesCache } from './update-checker.js';
 import { pruneOldImagesFor } from './image-retention.js';
 import { resolveDoctorHealthUrl } from './signalk-url-resolver.js';
@@ -165,7 +176,7 @@ async function doDoctorSwitch(input: DoctorSwitchInput): Promise<SwitchResult> {
   // 5. Health poll
   const timeoutMs = input.healthTimeoutMs ?? DEFAULT_HEALTH_TIMEOUT_MS;
   const healthUrl = await resolveDoctorHealthUrl();
-  const healthy = await pollHealth(healthUrl, timeoutMs, {
+  let healthy = await pollHealth(healthUrl, timeoutMs, {
     onProgress: (p) => {
       emit({
         stage: 'health-poll',
@@ -175,6 +186,27 @@ async function doDoctorSwitch(input: DoctorSwitchInput): Promise<SwitchResult> {
       });
     },
   });
+
+  // An expired poll does not prove failure: `startUnit` only enqueues a job,
+  // and the container create can still be running inside the Quadlet's
+  // TimeoutStartSec. Stopping a unit that is still `activating` SIGKILLs
+  // `podman run` mid-create and leaves an incomplete overlay layer that wedges
+  // podman's global storage lock. Wait for the start to settle, then re-check.
+  if (!healthy) {
+    const settled = await waitWhileActivating(DOCTOR_UNIT);
+    if (settled === 'active') {
+      emit({
+        stage: 'health-poll',
+        to: input.tag,
+        from: previousImage,
+        message: 'Container finished starting after the poll window; re-checking health…',
+      });
+      // No allowSelfSigned: the doctor's probe is plain http (see
+      // PollHealthOptions), so this matches the first poll's options exactly.
+      healthy = await pollHealth(healthUrl, POST_SETTLE_HEALTH_TIMEOUT_MS);
+    }
+  }
+
   if (!healthy) {
     emit({
       stage: 'rolling-back',
