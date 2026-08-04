@@ -250,6 +250,35 @@ async function doSwitch(input: SwitchInput): Promise<SwitchResult> {
   // health one more (much shorter) window before giving up.
   if (!healthy) {
     const settled = await waitWhileActivating(SIGNALK_UNIT);
+    // Still `activating` means waitWhileActivating hit its OWN deadline, not
+    // that the start failed — the container create is genuinely still running.
+    // Rolling back here would do precisely the damage this block exists to
+    // avoid, so bail out WITHOUT touching the unit or the Quadlet. Hands off is
+    // the only coherent answer: if we are not confident enough to stop the
+    // start, we are not confident enough to call the image bad either. The
+    // operator gets a clear, non-rolled-back failure and can decide once the
+    // unit settles.
+    if (settled === 'activating') {
+      const stuckError =
+        `signalk-server was still starting after ${timeoutMs}ms of health polling ` +
+        `and had not settled; left running on ${input.tag} rather than interrupting ` +
+        `container creation`;
+      publishSwitchEvent({
+        stage: 'failed',
+        to: input.tag,
+        from: previousImage,
+        error: stuckError,
+      });
+      return {
+        ok: false,
+        from: previousImage,
+        to: input.tag,
+        durationMs: Date.now() - start,
+        hooksRun,
+        error: stuckError,
+        rolledBack: false,
+      };
+    }
     if (settled === 'active') {
       publishSwitchEvent({
         stage: 'health-poll',

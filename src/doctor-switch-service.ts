@@ -194,6 +194,31 @@ async function doDoctorSwitch(input: DoctorSwitchInput): Promise<SwitchResult> {
   // podman's global storage lock. Wait for the start to settle, then re-check.
   if (!healthy) {
     const settled = await waitWhileActivating(DOCTOR_UNIT);
+    // Still `activating` means waitWhileActivating hit its OWN deadline — the
+    // container create is genuinely still running. Rolling back here would do
+    // exactly the damage this block exists to avoid, so bail out without
+    // touching the unit or the Quadlet. Mirrors switch-service.ts.
+    if (settled === 'activating') {
+      const stuckError =
+        `signalk-doctor-server was still starting after ${timeoutMs}ms of health ` +
+        `polling and had not settled; left running on ${input.tag} rather than ` +
+        `interrupting container creation`;
+      emit({
+        stage: 'failed',
+        to: input.tag,
+        from: previousImage,
+        error: stuckError,
+      });
+      return {
+        ok: false,
+        from: previousImage,
+        to: input.tag,
+        durationMs: Date.now() - start,
+        hooksRun,
+        error: stuckError,
+        rolledBack: false,
+      };
+    }
     if (settled === 'active') {
       emit({
         stage: 'health-poll',
