@@ -46,6 +46,29 @@ interface DoctorSwitchInput {
   healthTimeoutMs?: number;
 }
 
+/**
+ * Restore the Quadlet to `previousImage`, reporting whether it actually
+ * happened. The boolean is the whole point: the old code swallowed a failed
+ * rewrite with `.catch(() => undefined)` and then returned `rolledBack: true`
+ * regardless, so a rollback that silently did nothing -- a full or failing SD
+ * card is the realistic cause, and a switch is exactly when the card is under
+ * pressure -- reported success. The operator would be told the box was back on
+ * the old image while it was still on the broken one.
+ *
+ * The raw error is logged, never surfaced: it can carry host paths, and this
+ * string reaches the SSE stream and a SignalK notification.
+ */
+async function restoreQuadlet(previousImage: string): Promise<boolean> {
+  try {
+    await rewriteQuadletImage(DOCTOR_QUADLET, previousImage);
+    return true;
+  } catch (err) {
+    const raw = err instanceof Error ? err.message : String(err);
+    console.error(`doctor-switch: rollback to ${previousImage} failed: ${raw}`);
+    return false;
+  }
+}
+
 export async function performDoctorSwitch(input: DoctorSwitchInput): Promise<SwitchResult> {
   // Same mutex as signalk-server switch + self-update. CC-5 invariant:
   // only one of these flows can run at a time across the updater AND
@@ -154,9 +177,7 @@ async function doDoctorSwitch(input: DoctorSwitchInput): Promise<SwitchResult> {
       from: previousImage,
       error: `systemd restart failed: ${dbusOk.error.userMessage}`,
     });
-    if (previousImage) {
-      await rewriteQuadletImage(DOCTOR_QUADLET, previousImage).catch(() => undefined);
-    }
+    const rolledBack = previousImage ? await restoreQuadlet(previousImage) : false;
     emit({
       stage: 'failed',
       to: input.tag,
@@ -170,7 +191,7 @@ async function doDoctorSwitch(input: DoctorSwitchInput): Promise<SwitchResult> {
       durationMs: Date.now() - start,
       hooksRun,
       error: `systemd restart failed: ${dbusOk.error.userMessage}`,
-      rolledBack: true,
+      rolledBack,
     };
   }
 
@@ -251,9 +272,12 @@ async function doDoctorSwitch(input: DoctorSwitchInput): Promise<SwitchResult> {
       from: previousImage,
       error: `signalk-doctor-server did not become healthy within ${timeoutMs}ms`,
     });
-    // Whether we can prove the unit was stopped. Anything else -- no previous
-    // image, or an unconfirmed stop -- must not be reported as a rollback.
+    // Two independent facts, both required before this counts as a rollback:
+    // that the unit actually stopped, and that the Quadlet actually went back.
+    // Either one failing leaves the box somewhere other than "on the old image".
     let stopConfirmed = false;
+    let quadletRestored = false;
+    let configApplied = false;
     if (previousImage) {
       // Stop first, before the fsyncing Quadlet rewrite and the daemon-reload
       // DBus round trip — both take seconds on an SD card, and the safe-state
@@ -268,23 +292,51 @@ async function doDoctorSwitch(input: DoctorSwitchInput): Promise<SwitchResult> {
       stopConfirmed = stopped.ok;
       if (!stopped.ok) {
         console.error(
-          `doctor-switch: rollback stop of doctor unconfirmed: ${stopped.error.userMessage}`,
+          `doctor-switch: rollback stop of ${DOCTOR_UNIT} unconfirmed: ${stopped.error.userMessage}`,
         );
       }
-      await rewriteQuadletImage(DOCTOR_QUADLET, previousImage).catch(() => undefined);
+      quadletRestored = await restoreQuadlet(previousImage);
+      // daemon-reload's result matters as much as the rewrite's: without it
+      // systemd keeps the unit it generated from the NEW image's Quadlet, so
+      // the start below brings the container back up on exactly the image we
+      // are rolling away from, while the Quadlet on disk says otherwise.
+      // Restoring the file and applying it are two different claims.
+      //
       // Separate safe() calls, NOT one block: we have already stopped the unit,
       // and an intentional Stop suppresses Restart=, so anything that skips the
       // start leaves it deliberately down. Sharing a try with daemonReload would
       // make a reload failure turn a rollback into an outage. Always attempt the
       // start, even against a stale unit definition.
-      await safe(() => daemonReload());
+      const reloaded = await safe(() => daemonReload());
+      configApplied = reloaded.ok;
+      if (!reloaded.ok) {
+        console.error(
+          `doctor-switch: rollback daemon-reload failed: ${reloaded.error.userMessage}`,
+        );
+      }
       await safe(() => startUnit(DOCTOR_UNIT));
+    }
+    // Say which half failed. "did not become healthy" alone would let an
+    // operator assume the box is back on the old image when it may not be.
+    let rollbackError = `signalk-doctor-server did not become healthy within ${timeoutMs}ms`;
+    if (previousImage && !stopConfirmed) {
+      rollbackError +=
+        ', and the rollback could not confirm the unit stopped -- it may still be ' +
+        'running the new image';
+    } else if (previousImage && !quadletRestored) {
+      rollbackError += ', and the Quadlet could not be restored to the previous image';
+    } else if (previousImage && !configApplied) {
+      rollbackError +=
+        ', and the restored Quadlet could not be applied (daemon-reload failed), so the ' +
+        'unit may have restarted on the new image';
+    } else if (!previousImage) {
+      rollbackError += '; no previous image was recorded, so nothing was rolled back';
     }
     emit({
       stage: 'failed',
       to: input.tag,
       from: previousImage,
-      error: `signalk-doctor-server did not become healthy within ${timeoutMs}ms`,
+      error: rollbackError,
     });
     return {
       ok: false,
@@ -292,11 +344,8 @@ async function doDoctorSwitch(input: DoctorSwitchInput): Promise<SwitchResult> {
       to: input.tag,
       durationMs: Date.now() - start,
       hooksRun,
-      error: stopConfirmed
-        ? `signalk-doctor-server did not become healthy within ${timeoutMs}ms`
-        : `signalk-doctor-server did not become healthy within ${timeoutMs}ms, and the rollback ` +
-          `could not confirm the unit stopped -- it may still be running the new image`,
-      rolledBack: stopConfirmed,
+      error: rollbackError,
+      rolledBack: stopConfirmed && quadletRestored && configApplied,
     };
   }
 
