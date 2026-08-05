@@ -193,7 +193,10 @@ describe('performSwitch — activation gate before rollback', () => {
 
     const result = await performSwitch({ tag: 'new' });
 
-    expect(result.rolledBack).toBe(true);
+    // Not a rollback: without the reload, systemd still holds the unit it
+    // generated from the NEW image, so the start below brings the container
+    // back on the image we are rolling away from. Reported honestly.
+    expect(result.rolledBack).toBe(false);
     expect(mockStopUnitAndWait).toHaveBeenCalledTimes(2);
     // Twice: the normal restart's start, and the rollback's — the point of this
     // test. One call means the unit was stopped and never brought back.
