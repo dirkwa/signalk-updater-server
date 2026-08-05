@@ -1,9 +1,21 @@
 import { safe } from './podman/client.js';
 import { rewriteQuadletImage, writeLastGood } from './quadlet/rewriter.js';
-import { daemonReload, startUnit, stopUnitAndWait } from './dbus/systemd-user.js';
+import {
+  daemonReload,
+  isSafeToStop,
+  startUnit,
+  stopUnitAndWait,
+  waitWhileActivating,
+} from './dbus/systemd-user.js';
 import { withMutex, MutexBusyError } from './mutex.js';
 import { preSwitchBackup, type BackupResult } from './backup.js';
-import { DEFAULT_HEALTH_TIMEOUT_MS, pollHealth, pullImage, trialRun } from './container-ops.js';
+import {
+  DEFAULT_HEALTH_TIMEOUT_MS,
+  POST_SETTLE_HEALTH_TIMEOUT_MS,
+  pollHealth,
+  pullImage,
+  trialRun,
+} from './container-ops.js';
 import { publishSwitchEvent } from './switch-progress-broker.js';
 import { refreshDoctorDrift } from './drift-client.js';
 import { pruneOldImagesFor } from './image-retention.js';
@@ -212,7 +224,7 @@ async function doSwitch(input: SwitchInput): Promise<SwitchResult> {
   });
   const timeoutMs = input.healthTimeoutMs ?? DEFAULT_HEALTH_TIMEOUT_MS;
   const healthUrl = await resolveSignalkHealthUrl();
-  const healthy = await pollHealth(healthUrl, timeoutMs, {
+  let healthy = await pollHealth(healthUrl, timeoutMs, {
     // signalk-server's SSL plugin redirects :80/signalk to a self-signed
     // https endpoint; accept it on this local liveness probe (see
     // pollHealth's PollHealthOptions doc).
@@ -229,6 +241,72 @@ async function doSwitch(input: SwitchInput): Promise<SwitchResult> {
       });
     },
   });
+  // An expired health poll does NOT prove the switch failed: `startUnit` only
+  // enqueues a job, and the server Quadlet budgets TimeoutStartSec=300 for a
+  // slow SD-card container create against our 180s poll. The unit can still be
+  // `activating` right now. Rolling back in that window is what turns a failed
+  // switch into a wedged host — systemd SIGTERMs `podman run` mid-create, then
+  // SIGKILLs it, and the orphaned incomplete overlay layer blocks the global
+  // c/storage lock until someone SSHes in. Let the start settle, then give
+  // health one more (much shorter) window before giving up.
+  // Bail WITHOUT touching the unit or the Quadlet. Hands off is the only
+  // coherent answer when the unit is not provably settled: if we are not
+  // confident enough to stop the start, we are not confident enough to call the
+  // image bad and revert the tag either. The operator gets a clear,
+  // non-rolled-back failure and can decide once the unit settles.
+  const handsOff = (state: string): SwitchResult => {
+    const stuckError =
+      `signalk-server did not reach a settled state after ${timeoutMs}ms of ` +
+      `health polling (systemd reports "${state}"); left alone on ${input.tag} ` +
+      `rather than risk interrupting container creation`;
+    publishSwitchEvent({
+      stage: 'failed',
+      to: input.tag,
+      from: previousImage,
+      error: stuckError,
+    });
+    return {
+      ok: false,
+      from: previousImage,
+      to: input.tag,
+      durationMs: Date.now() - start,
+      hooksRun,
+      error: stuckError,
+      rolledBack: false,
+    };
+  };
+
+  if (!healthy) {
+    const settled = await waitWhileActivating(SIGNALK_UNIT);
+    if (settled === 'active') {
+      publishSwitchEvent({
+        stage: 'health-poll',
+        to: input.tag,
+        from: previousImage,
+        message: 'Container finished starting after the poll window; re-checking health…',
+      });
+      healthy = await pollHealth(healthUrl, POST_SETTLE_HEALTH_TIMEOUT_MS, {
+        allowSelfSigned: true,
+      });
+    } else if (!isSafeToStop(settled)) {
+      // Already stuck once — do not spend a second full settle window on it.
+      return handsOff(settled);
+    }
+  }
+
+  if (!healthy) {
+    // Re-read the state IMMEDIATELY before touching the unit. The check above
+    // happened up to POST_SETTLE_HEALTH_TIMEOUT_MS ago, and that answer goes
+    // stale: with Restart=always (RestartSec=10) a container that starts, fails
+    // its health probe and dies is back in `activating` — a fresh `podman run`
+    // creating a container — within seconds. Deciding off the pre-poll state
+    // would stop the unit right on top of that create, which is the wedge this
+    // whole block exists to prevent. waitWhileActivating also rides out a
+    // create that is merely slow, so the common case costs one DBus read.
+    const current = await waitWhileActivating(SIGNALK_UNIT);
+    if (!isSafeToStop(current)) return handsOff(current);
+  }
+
   if (!healthy) {
     publishSwitchEvent({
       stage: 'rolling-back',
@@ -236,13 +314,39 @@ async function doSwitch(input: SwitchInput): Promise<SwitchResult> {
       from: previousImage,
       error: `signalk-server did not become healthy within ${timeoutMs}ms`,
     });
+    // Whether we can prove the unit was stopped. Anything else -- no previous
+    // image, or an unconfirmed stop -- must not be reported as a rollback.
+    let stopConfirmed = false;
     if (previousImage) {
+      // STOP FIRST, before any other I/O. The safe-state decision above is only
+      // valid for as long as nothing else awaits: rewriteQuadletImage fsyncs
+      // (tmp + rename + dir-fsync) and daemonReload is a DBus round trip, and on
+      // an SD card those take seconds — comfortably inside RestartSec=10. An
+      // unhealthy container that exits in that gap is back in `activating` with
+      // a fresh `podman run` in flight, and the stop would land on the create.
+      // Stopping first shrinks the window to the call itself.
+      //
+      // Ordering is safe: an intentional Stop suppresses the Restart= policy for
+      // that transition, so the unit stays down while the Quadlet is rewritten,
+      // and the startUnit below picks up the rolled-back image either way.
+      // The stop result is load-bearing, not fire-and-forget: `safe` returns
+      // ok:false when the DBus StopUnit rejects, or when stopUnitAndWait gives
+      // up polling for a terminal state. Either way the unit may still be
+      // running the new image, so a rollback reported as complete would be a
+      // lie. Recorded and surfaced below.
+      const stopped = await safe(() => stopUnitAndWait(SIGNALK_UNIT));
+      stopConfirmed = stopped.ok;
+      if (!stopped.ok) {
+        console.error(`switch: rollback stop of signalk unconfirmed: ${stopped.error.userMessage}`);
+      }
       await rewriteQuadletImage(SIGNALK_QUADLET, previousImage).catch(() => undefined);
-      await safe(async () => {
-        await daemonReload();
-        await stopUnitAndWait(SIGNALK_UNIT);
-        await startUnit(SIGNALK_UNIT);
-      });
+      // Separate safe() calls, NOT one block: we have already stopped the unit,
+      // and an intentional Stop suppresses Restart=, so anything that skips the
+      // start leaves it deliberately down. Sharing a try with daemonReload would
+      // make a reload failure turn a rollback into an outage. Always attempt the
+      // start, even against a stale unit definition.
+      await safe(() => daemonReload());
+      await safe(() => startUnit(SIGNALK_UNIT));
     }
     publishSwitchEvent({
       stage: 'failed',
@@ -256,8 +360,11 @@ async function doSwitch(input: SwitchInput): Promise<SwitchResult> {
       to: input.tag,
       durationMs: Date.now() - start,
       hooksRun,
-      error: `signalk-server did not become healthy within ${timeoutMs}ms`,
-      rolledBack: true,
+      error: stopConfirmed
+        ? `signalk-server did not become healthy within ${timeoutMs}ms`
+        : `signalk-server did not become healthy within ${timeoutMs}ms, and the rollback ` +
+          `could not confirm the unit stopped -- it may still be running the new image`,
+      rolledBack: stopConfirmed,
     };
   }
 

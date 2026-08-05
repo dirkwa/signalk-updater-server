@@ -1,8 +1,20 @@
 import { safe } from './podman/client.js';
 import { rewriteQuadletImage, writeLastGood } from './quadlet/rewriter.js';
-import { daemonReload, startUnit, stopUnitAndWait } from './dbus/systemd-user.js';
+import {
+  daemonReload,
+  isSafeToStop,
+  startUnit,
+  stopUnitAndWait,
+  waitWhileActivating,
+} from './dbus/systemd-user.js';
 import { withMutex, MutexBusyError } from './mutex.js';
-import { DEFAULT_HEALTH_TIMEOUT_MS, pollHealth, pullImage, trialRun } from './container-ops.js';
+import {
+  DEFAULT_HEALTH_TIMEOUT_MS,
+  POST_SETTLE_HEALTH_TIMEOUT_MS,
+  pollHealth,
+  pullImage,
+  trialRun,
+} from './container-ops.js';
 import { invalidate as invalidateUpdatesCache } from './update-checker.js';
 import { pruneOldImagesFor } from './image-retention.js';
 import { resolveDoctorHealthUrl } from './signalk-url-resolver.js';
@@ -165,7 +177,7 @@ async function doDoctorSwitch(input: DoctorSwitchInput): Promise<SwitchResult> {
   // 5. Health poll
   const timeoutMs = input.healthTimeoutMs ?? DEFAULT_HEALTH_TIMEOUT_MS;
   const healthUrl = await resolveDoctorHealthUrl();
-  const healthy = await pollHealth(healthUrl, timeoutMs, {
+  let healthy = await pollHealth(healthUrl, timeoutMs, {
     onProgress: (p) => {
       emit({
         stage: 'health-poll',
@@ -175,6 +187,63 @@ async function doDoctorSwitch(input: DoctorSwitchInput): Promise<SwitchResult> {
       });
     },
   });
+
+  // An expired poll does not prove failure: `startUnit` only enqueues a job,
+  // and the container create can still be running inside the Quadlet's
+  // TimeoutStartSec. Stopping a unit that is still `activating` SIGKILLs
+  // `podman run` mid-create and leaves an incomplete overlay layer that wedges
+  // podman's global storage lock. Wait for the start to settle, then re-check.
+  // Bail without touching the unit or the Quadlet when it is not provably
+  // settled. Mirrors switch-service.ts.
+  const handsOff = (state: string): SwitchResult => {
+    const stuckError =
+      `signalk-doctor-server did not reach a settled state after ${timeoutMs}ms ` +
+      `of health polling (systemd reports "${state}"); left alone on ` +
+      `${input.tag} rather than risk interrupting container creation`;
+    emit({
+      stage: 'failed',
+      to: input.tag,
+      from: previousImage,
+      error: stuckError,
+    });
+    return {
+      ok: false,
+      from: previousImage,
+      to: input.tag,
+      durationMs: Date.now() - start,
+      hooksRun,
+      error: stuckError,
+      rolledBack: false,
+    };
+  };
+
+  if (!healthy) {
+    const settled = await waitWhileActivating(DOCTOR_UNIT);
+    if (settled === 'active') {
+      emit({
+        stage: 'health-poll',
+        to: input.tag,
+        from: previousImage,
+        message: 'Container finished starting after the poll window; re-checking health…',
+      });
+      // No allowSelfSigned: the doctor's probe is plain http (see
+      // PollHealthOptions), so this matches the first poll's options exactly.
+      healthy = await pollHealth(healthUrl, POST_SETTLE_HEALTH_TIMEOUT_MS);
+    } else if (!isSafeToStop(settled)) {
+      // Already stuck once — do not spend a second full settle window on it.
+      return handsOff(settled);
+    }
+  }
+
+  if (!healthy) {
+    // Re-read IMMEDIATELY before touching the unit: the check above is up to
+    // POST_SETTLE_HEALTH_TIMEOUT_MS stale, and a container that starts, fails
+    // its probe and dies is back in `activating` — a fresh `podman run` mid
+    // container-create — within RestartSec. Mirrors switch-service.ts.
+    const current = await waitWhileActivating(DOCTOR_UNIT);
+    if (!isSafeToStop(current)) return handsOff(current);
+  }
+
   if (!healthy) {
     emit({
       stage: 'rolling-back',
@@ -182,13 +251,34 @@ async function doDoctorSwitch(input: DoctorSwitchInput): Promise<SwitchResult> {
       from: previousImage,
       error: `signalk-doctor-server did not become healthy within ${timeoutMs}ms`,
     });
+    // Whether we can prove the unit was stopped. Anything else -- no previous
+    // image, or an unconfirmed stop -- must not be reported as a rollback.
+    let stopConfirmed = false;
     if (previousImage) {
+      // Stop first, before the fsyncing Quadlet rewrite and the daemon-reload
+      // DBus round trip — both take seconds on an SD card, and the safe-state
+      // decision above is only valid until the next await. Mirrors
+      // switch-service.ts.
+      // The stop result is load-bearing, not fire-and-forget: `safe` returns
+      // ok:false when the DBus StopUnit rejects, or when stopUnitAndWait gives
+      // up polling for a terminal state. Either way the unit may still be
+      // running the new image, so a rollback reported as complete would be a
+      // lie. Recorded and surfaced below.
+      const stopped = await safe(() => stopUnitAndWait(DOCTOR_UNIT));
+      stopConfirmed = stopped.ok;
+      if (!stopped.ok) {
+        console.error(
+          `doctor-switch: rollback stop of doctor unconfirmed: ${stopped.error.userMessage}`,
+        );
+      }
       await rewriteQuadletImage(DOCTOR_QUADLET, previousImage).catch(() => undefined);
-      await safe(async () => {
-        await daemonReload();
-        await stopUnitAndWait(DOCTOR_UNIT);
-        await startUnit(DOCTOR_UNIT);
-      });
+      // Separate safe() calls, NOT one block: we have already stopped the unit,
+      // and an intentional Stop suppresses Restart=, so anything that skips the
+      // start leaves it deliberately down. Sharing a try with daemonReload would
+      // make a reload failure turn a rollback into an outage. Always attempt the
+      // start, even against a stale unit definition.
+      await safe(() => daemonReload());
+      await safe(() => startUnit(DOCTOR_UNIT));
     }
     emit({
       stage: 'failed',
@@ -202,8 +292,11 @@ async function doDoctorSwitch(input: DoctorSwitchInput): Promise<SwitchResult> {
       to: input.tag,
       durationMs: Date.now() - start,
       hooksRun,
-      error: `signalk-doctor-server did not become healthy within ${timeoutMs}ms`,
-      rolledBack: true,
+      error: stopConfirmed
+        ? `signalk-doctor-server did not become healthy within ${timeoutMs}ms`
+        : `signalk-doctor-server did not become healthy within ${timeoutMs}ms, and the rollback ` +
+          `could not confirm the unit stopped -- it may still be running the new image`,
+      rolledBack: stopConfirmed,
     };
   }
 

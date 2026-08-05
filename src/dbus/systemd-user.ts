@@ -141,6 +141,80 @@ function encodeUnitPath(unit: string): string {
 }
 
 /**
+ * Is it safe to STOP a unit sitting in this ActiveState?
+ *
+ * Deliberately an ALLOWLIST of states that prove the start is over, not
+ * "anything except activating". `getActiveState` returns `unknown` whenever the
+ * busctl call itself fails, so a transient DBus hiccup during a switch would
+ * otherwise read as permission to stop a unit that is still mid-container-
+ * create — the precise sequence that SIGKILLs `podman run` and wedges the
+ * host's c/storage lock. Any future systemd state we do not recognise lands on
+ * the cautious side for the same reason.
+ *
+ * `active` counts as settled: the start finished, nothing is mid-create, and
+ * stopping it is exactly what the normal switch path already does. Only
+ * `activating` (create possibly in flight) and `unknown` (we cannot tell) are
+ * off limits.
+ *
+ * The asymmetry justifies the caution: leaving a bad image running is
+ * recoverable from the Doctor Console or `signalk-recovery`, while a wedged
+ * podman needs SSH. When the state is not provably settled, do not stop.
+ *
+ * NOTE: this answers about a state you have JUST read. An ActiveState goes
+ * stale the moment you stop looking at it — with `Restart=always` a
+ * crashlooping unit cycles back into `activating` within RestartSec — so
+ * re-read immediately before acting rather than reusing an earlier answer
+ * across a long await.
+ */
+export function isSafeToStop(state: string): boolean {
+  return (
+    state === 'active' || state === 'failed' || state === 'inactive' || state === 'deactivating'
+  );
+}
+
+/**
+ * Block while a unit is still `activating`, resolving once it settles (or the
+ * deadline passes). Returns the final ActiveState.
+ *
+ * Call this before stopping a unit you did not just watch start. `startUnit`
+ * only ENQUEUES a job — it returns when systemd accepts the request, not when
+ * the unit is up — so a health poll runs concurrently with systemd's own start
+ * budget rather than after it. signalk-server's Quadlet allows
+ * TimeoutStartSec=300 for a slow SD-card container create, which outlasts
+ * DEFAULT_HEALTH_TIMEOUT_MS; the poll can therefore expire while the start is
+ * still perfectly legal.
+ *
+ * Stopping a unit in that window is what makes this dangerous rather than
+ * merely wrong: systemd SIGTERMs `podman run` mid-container-create and SIGKILLs
+ * it at TimeoutStopSec. The half-written container layer survives as an
+ * `incomplete` layer whose overlayfs mount is still live, podman's own cleanup
+ * spins on it holding the global c/storage lock, and every later podman command
+ * blocks — the host needs `signalk-recovery unwedge-podman` over SSH. Waiting
+ * for the unit to settle keeps a failed switch a failed switch.
+ *
+ * Default 330s clears the 300s TimeoutStartSec the installer renders, so a
+ * create that is merely slow is never mistaken for a hung one.
+ *
+ * `readState` exists as an explicit test seam. `vi.mock` on this module's
+ * exports cannot intercept an intra-module call — the loop would keep using the
+ * real `getActiveState` and quietly query the host's systemd — so the reader is
+ * injected rather than closed over. Production callers pass nothing.
+ */
+export async function waitWhileActivating(
+  unit: string,
+  timeoutMs = 330_000,
+  readState: (u: string) => Promise<string> = getActiveState,
+): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  let state = await readState(unit);
+  while (state === 'activating' && Date.now() < deadline) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 500));
+    state = await readState(unit);
+  }
+  return state;
+}
+
+/**
  * Stop a unit and wait for it to reach a terminal state (`inactive` or
  * `failed`). `stopUnit` only enqueues the stop job — when we follow it
  * with `startUnit`, the two are independent DBus jobs and systemd does
