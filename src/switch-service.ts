@@ -314,6 +314,9 @@ async function doSwitch(input: SwitchInput): Promise<SwitchResult> {
       from: previousImage,
       error: `signalk-server did not become healthy within ${timeoutMs}ms`,
     });
+    // Whether we can prove the unit was stopped. Anything else -- no previous
+    // image, or an unconfirmed stop -- must not be reported as a rollback.
+    let stopConfirmed = false;
     if (previousImage) {
       // STOP FIRST, before any other I/O. The safe-state decision above is only
       // valid for as long as nothing else awaits: rewriteQuadletImage fsyncs
@@ -326,7 +329,16 @@ async function doSwitch(input: SwitchInput): Promise<SwitchResult> {
       // Ordering is safe: an intentional Stop suppresses the Restart= policy for
       // that transition, so the unit stays down while the Quadlet is rewritten,
       // and the startUnit below picks up the rolled-back image either way.
-      await safe(() => stopUnitAndWait(SIGNALK_UNIT));
+      // The stop result is load-bearing, not fire-and-forget: `safe` returns
+      // ok:false when the DBus StopUnit rejects, or when stopUnitAndWait gives
+      // up polling for a terminal state. Either way the unit may still be
+      // running the new image, so a rollback reported as complete would be a
+      // lie. Recorded and surfaced below.
+      const stopped = await safe(() => stopUnitAndWait(SIGNALK_UNIT));
+      stopConfirmed = stopped.ok;
+      if (!stopped.ok) {
+        console.error(`switch: rollback stop of signalk unconfirmed: ${stopped.error.userMessage}`);
+      }
       await rewriteQuadletImage(SIGNALK_QUADLET, previousImage).catch(() => undefined);
       // Separate safe() calls, NOT one block: we have already stopped the unit,
       // and an intentional Stop suppresses Restart=, so anything that skips the
@@ -348,8 +360,11 @@ async function doSwitch(input: SwitchInput): Promise<SwitchResult> {
       to: input.tag,
       durationMs: Date.now() - start,
       hooksRun,
-      error: `signalk-server did not become healthy within ${timeoutMs}ms`,
-      rolledBack: true,
+      error: stopConfirmed
+        ? `signalk-server did not become healthy within ${timeoutMs}ms`
+        : `signalk-server did not become healthy within ${timeoutMs}ms, and the rollback ` +
+          `could not confirm the unit stopped -- it may still be running the new image`,
+      rolledBack: stopConfirmed,
     };
   }
 

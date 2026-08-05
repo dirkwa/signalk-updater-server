@@ -200,6 +200,29 @@ describe('performSwitch — activation gate before rollback', () => {
     expect(mockStartUnit).toHaveBeenCalledTimes(2);
   });
 
+  // An unconfirmed stop must not be reported as a completed rollback. safe()
+  // returns ok:false when the DBus StopUnit rejects, or when stopUnitAndWait
+  // gives up polling for a terminal state -- and in both cases the unit may
+  // still be running the new image.
+  it('reports the rollback incomplete when the stop is not confirmed', async () => {
+    const { performSwitch } = await import('../src/switch-service.js');
+    mockWaitWhileActivating.mockResolvedValue('failed');
+    // Succeed for the planned pre-start stop, fail on the rollback's stop.
+    mockStopUnitAndWait
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValue(new Error('did not reach terminal state within 30000ms'));
+
+    const result = await performSwitch({ tag: 'new' });
+
+    expect(result.ok).toBe(false);
+    expect(result.rolledBack).toBe(false);
+    expect(result.error).toMatch(/could not confirm the unit stopped/i);
+    // Deliberately still attempted: bailing here would leave the nav server
+    // stopped on the broken tag. See the comment on the rollback block.
+    expect(mockRewriteQuadletImage).toHaveBeenCalledTimes(2);
+    expect(mockStartUnit).toHaveBeenCalledTimes(2);
+  });
+
   it('still rolls back when the start genuinely failed', async () => {
     const { performSwitch } = await import('../src/switch-service.js');
     mockWaitWhileActivating.mockResolvedValue('failed');
@@ -219,12 +242,18 @@ describe('performSwitch — activation gate before rollback', () => {
     // await, and rewriteQuadletImage fsyncs — seconds on an SD card, inside
     // RestartSec=10 — so a rewrite-then-stop ordering reopens the window for an
     // unhealthy container to crashloop back into a live container create.
-    expect(mockStopUnitAndWait.mock.invocationCallOrder[1]).toBeLessThan(
-      mockRewriteQuadletImage.mock.invocationCallOrder[1] as number,
-    );
-    expect(mockStopUnitAndWait.mock.invocationCallOrder[1]).toBeLessThan(
-      mockDaemonReload.mock.invocationCallOrder[1] as number,
-    );
+    // Narrow before comparing: noUncheckedIndexedAccess types these as
+    // `number | undefined`, and `toBeLessThan(undefined as any)` would pass
+    // vacuously -- an order assertion that silently checks nothing is worse
+    // than no assertion. Assert each index exists, then compare numbers.
+    const stopAt = mockStopUnitAndWait.mock.invocationCallOrder[1];
+    const rewriteAt = mockRewriteQuadletImage.mock.invocationCallOrder[1];
+    const reloadAt = mockDaemonReload.mock.invocationCallOrder[1];
+    expect(stopAt).toBeDefined();
+    expect(rewriteAt).toBeDefined();
+    expect(reloadAt).toBeDefined();
+    expect(stopAt as number).toBeLessThan(rewriteAt as number);
+    expect(stopAt as number).toBeLessThan(reloadAt as number);
   });
 
   it('rolls back from inactive too — the start is provably over', async () => {
@@ -296,6 +325,20 @@ describe('performDoctorSwitch — activation gate before rollback', () => {
     expect(mockStopUnitAndWait).toHaveBeenCalledTimes(2);
   });
 
+  it('reports the rollback incomplete when the stop is not confirmed', async () => {
+    const { performDoctorSwitch } = await import('../src/doctor-switch-service.js');
+    mockWaitWhileActivating.mockResolvedValue('failed');
+    mockStopUnitAndWait
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValue(new Error('did not reach terminal state within 30000ms'));
+
+    const result = await performDoctorSwitch({ tag: 'new' });
+
+    expect(result.rolledBack).toBe(false);
+    expect(result.error).toMatch(/could not confirm the unit stopped/i);
+    expect(mockStartUnit).toHaveBeenCalledTimes(2);
+  });
+
   it('still rolls back when the start genuinely failed', async () => {
     const { performDoctorSwitch } = await import('../src/doctor-switch-service.js');
     mockWaitWhileActivating.mockResolvedValue('failed');
@@ -310,11 +353,13 @@ describe('performDoctorSwitch — activation gate before rollback', () => {
     // Same ordering rule as the server flow: stop before the rollback rewrite
     // and daemon-reload, so no fsync or DBus round trip sits between the
     // safe-state decision and the stop.
-    expect(mockStopUnitAndWait.mock.invocationCallOrder[1]).toBeLessThan(
-      mockRewriteQuadletImage.mock.invocationCallOrder[1] as number,
-    );
-    expect(mockStopUnitAndWait.mock.invocationCallOrder[1]).toBeLessThan(
-      mockDaemonReload.mock.invocationCallOrder[1] as number,
-    );
+    const stopAt = mockStopUnitAndWait.mock.invocationCallOrder[1];
+    const rewriteAt = mockRewriteQuadletImage.mock.invocationCallOrder[1];
+    const reloadAt = mockDaemonReload.mock.invocationCallOrder[1];
+    expect(stopAt).toBeDefined();
+    expect(rewriteAt).toBeDefined();
+    expect(reloadAt).toBeDefined();
+    expect(stopAt as number).toBeLessThan(rewriteAt as number);
+    expect(stopAt as number).toBeLessThan(reloadAt as number);
   });
 });
