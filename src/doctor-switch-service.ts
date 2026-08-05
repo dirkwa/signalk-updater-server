@@ -193,6 +193,30 @@ async function doDoctorSwitch(input: DoctorSwitchInput): Promise<SwitchResult> {
   // TimeoutStartSec. Stopping a unit that is still `activating` SIGKILLs
   // `podman run` mid-create and leaves an incomplete overlay layer that wedges
   // podman's global storage lock. Wait for the start to settle, then re-check.
+  // Bail without touching the unit or the Quadlet when it is not provably
+  // settled. Mirrors switch-service.ts.
+  const handsOff = (state: string): SwitchResult => {
+    const stuckError =
+      `signalk-doctor-server did not reach a settled state after ${timeoutMs}ms ` +
+      `of health polling (systemd reports "${state}"); left alone on ` +
+      `${input.tag} rather than risk interrupting container creation`;
+    emit({
+      stage: 'failed',
+      to: input.tag,
+      from: previousImage,
+      error: stuckError,
+    });
+    return {
+      ok: false,
+      from: previousImage,
+      to: input.tag,
+      durationMs: Date.now() - start,
+      hooksRun,
+      error: stuckError,
+      rolledBack: false,
+    };
+  };
+
   if (!healthy) {
     const settled = await waitWhileActivating(DOCTOR_UNIT);
     if (settled === 'active') {
@@ -206,30 +230,18 @@ async function doDoctorSwitch(input: DoctorSwitchInput): Promise<SwitchResult> {
       // PollHealthOptions), so this matches the first poll's options exactly.
       healthy = await pollHealth(healthUrl, POST_SETTLE_HEALTH_TIMEOUT_MS);
     } else if (!isSafeToStop(settled)) {
-      // Not provably settled — `activating` (create still running) or `unknown`
-      // (the DBus query itself failed). Rolling back on either risks stopping a
-      // unit mid-container-create. Bail without touching the unit or the
-      // Quadlet. Mirrors switch-service.ts.
-      const stuckError =
-        `signalk-doctor-server did not reach a settled state after ${timeoutMs}ms ` +
-        `of health polling (systemd reports "${settled}"); left alone on ` +
-        `${input.tag} rather than risk interrupting container creation`;
-      emit({
-        stage: 'failed',
-        to: input.tag,
-        from: previousImage,
-        error: stuckError,
-      });
-      return {
-        ok: false,
-        from: previousImage,
-        to: input.tag,
-        durationMs: Date.now() - start,
-        hooksRun,
-        error: stuckError,
-        rolledBack: false,
-      };
+      // Already stuck once — do not spend a second full settle window on it.
+      return handsOff(settled);
     }
+  }
+
+  if (!healthy) {
+    // Re-read IMMEDIATELY before touching the unit: the check above is up to
+    // POST_SETTLE_HEALTH_TIMEOUT_MS stale, and a container that starts, fails
+    // its probe and dies is back in `activating` — a fresh `podman run` mid
+    // container-create — within RestartSec. Mirrors switch-service.ts.
+    const current = await waitWhileActivating(DOCTOR_UNIT);
+    if (!isSafeToStop(current)) return handsOff(current);
   }
 
   if (!healthy) {

@@ -143,6 +143,41 @@ describe('performSwitch — activation gate before rollback', () => {
     expect(mockRewriteQuadletImage).toHaveBeenCalledTimes(1);
   });
 
+  // THE STALE-READ RACE. The gate before the post-settle health poll reads the
+  // state, then the poll runs for up to POST_SETTLE_HEALTH_TIMEOUT_MS. With
+  // Restart=always (RestartSec=10) a container that starts, fails its probe and
+  // dies is back in `activating` -- a fresh `podman run` creating a container --
+  // well inside that window. Deciding off the pre-poll `active` would stop the
+  // unit right on top of that create: the exact wedge this file guards.
+  it('re-reads the state after the health poll and does not stop a re-activating unit', async () => {
+    const { performSwitch } = await import('../src/switch-service.js');
+    mockWaitWhileActivating
+      .mockResolvedValueOnce('active') // pre-poll: looks settled, so we re-probe
+      .mockResolvedValueOnce('activating'); // post-poll: crashlooped back into a create
+
+    const result = await performSwitch({ tag: 'new' });
+
+    expect(result.ok).toBe(false);
+    expect(result.rolledBack).toBe(false);
+    expect(result.error).toContain('activating');
+    expect(mockStopUnitAndWait).toHaveBeenCalledTimes(1); // the planned stop only
+    expect(mockRewriteQuadletImage).toHaveBeenCalledTimes(1); // tag left alone
+    expect(mockWaitWhileActivating).toHaveBeenCalledTimes(2); // proves the re-read
+  });
+
+  // The same shape, but the unit is genuinely up when we look again: rollback
+  // must still happen, or an unhealthy image would never be reverted.
+  it('rolls back when the unit is still active after the health poll', async () => {
+    const { performSwitch } = await import('../src/switch-service.js');
+    mockWaitWhileActivating.mockResolvedValue('active');
+
+    const result = await performSwitch({ tag: 'new' });
+
+    expect(result.rolledBack).toBe(true);
+    expect(mockStopUnitAndWait).toHaveBeenCalledTimes(2);
+    expect(mockRewriteQuadletImage).toHaveBeenCalledTimes(2);
+  });
+
   it('still rolls back when the start genuinely failed', async () => {
     const { performSwitch } = await import('../src/switch-service.js');
     mockWaitWhileActivating.mockResolvedValue('failed');
@@ -199,6 +234,33 @@ describe('performDoctorSwitch — activation gate before rollback', () => {
     expect(result.rolledBack).toBe(false);
     expect(mockStopUnitAndWait).toHaveBeenCalledTimes(1);
     expect(mockRewriteQuadletImage).toHaveBeenCalledTimes(1);
+  });
+
+  // Stale-read race, doctor side. See the switch-service case for the full
+  // reasoning: the pre-poll state can be `active` while the post-poll state is
+  // a fresh container create.
+  it('re-reads the state after the health poll and does not stop a re-activating unit', async () => {
+    const { performDoctorSwitch } = await import('../src/doctor-switch-service.js');
+    mockWaitWhileActivating.mockResolvedValueOnce('active').mockResolvedValueOnce('activating');
+
+    const result = await performDoctorSwitch({ tag: 'new' });
+
+    expect(result.ok).toBe(false);
+    expect(result.rolledBack).toBe(false);
+    expect(result.error).toContain('activating');
+    expect(mockStopUnitAndWait).toHaveBeenCalledTimes(1);
+    expect(mockRewriteQuadletImage).toHaveBeenCalledTimes(1);
+    expect(mockWaitWhileActivating).toHaveBeenCalledTimes(2);
+  });
+
+  it('rolls back when the unit is still active after the health poll', async () => {
+    const { performDoctorSwitch } = await import('../src/doctor-switch-service.js');
+    mockWaitWhileActivating.mockResolvedValue('active');
+
+    const result = await performDoctorSwitch({ tag: 'new' });
+
+    expect(result.rolledBack).toBe(true);
+    expect(mockStopUnitAndWait).toHaveBeenCalledTimes(2);
   });
 
   it('still rolls back when the start genuinely failed', async () => {

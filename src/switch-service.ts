@@ -249,6 +249,33 @@ async function doSwitch(input: SwitchInput): Promise<SwitchResult> {
   // SIGKILLs it, and the orphaned incomplete overlay layer blocks the global
   // c/storage lock until someone SSHes in. Let the start settle, then give
   // health one more (much shorter) window before giving up.
+  // Bail WITHOUT touching the unit or the Quadlet. Hands off is the only
+  // coherent answer when the unit is not provably settled: if we are not
+  // confident enough to stop the start, we are not confident enough to call the
+  // image bad and revert the tag either. The operator gets a clear,
+  // non-rolled-back failure and can decide once the unit settles.
+  const handsOff = (state: string): SwitchResult => {
+    const stuckError =
+      `signalk-server did not reach a settled state after ${timeoutMs}ms of ` +
+      `health polling (systemd reports "${state}"); left alone on ${input.tag} ` +
+      `rather than risk interrupting container creation`;
+    publishSwitchEvent({
+      stage: 'failed',
+      to: input.tag,
+      from: previousImage,
+      error: stuckError,
+    });
+    return {
+      ok: false,
+      from: previousImage,
+      to: input.tag,
+      durationMs: Date.now() - start,
+      hooksRun,
+      error: stuckError,
+      rolledBack: false,
+    };
+  };
+
   if (!healthy) {
     const settled = await waitWhileActivating(SIGNALK_UNIT);
     if (settled === 'active') {
@@ -262,34 +289,22 @@ async function doSwitch(input: SwitchInput): Promise<SwitchResult> {
         allowSelfSigned: true,
       });
     } else if (!isSafeToStop(settled)) {
-      // Not provably settled. `activating` means waitWhileActivating hit its
-      // OWN deadline and the container create is still running; `unknown` means
-      // the DBus query itself failed and we simply do not know. Rolling back on
-      // either would do exactly the damage this block exists to avoid, so bail
-      // out WITHOUT touching the unit or the Quadlet. Hands off is the only
-      // coherent answer: if we are not confident enough to stop the start, we
-      // are not confident enough to call the image bad and revert the tag
-      // either. The operator gets a clear, non-rolled-back failure.
-      const stuckError =
-        `signalk-server did not reach a settled state after ${timeoutMs}ms of ` +
-        `health polling (systemd reports "${settled}"); left alone on ${input.tag} ` +
-        `rather than risk interrupting container creation`;
-      publishSwitchEvent({
-        stage: 'failed',
-        to: input.tag,
-        from: previousImage,
-        error: stuckError,
-      });
-      return {
-        ok: false,
-        from: previousImage,
-        to: input.tag,
-        durationMs: Date.now() - start,
-        hooksRun,
-        error: stuckError,
-        rolledBack: false,
-      };
+      // Already stuck once — do not spend a second full settle window on it.
+      return handsOff(settled);
     }
+  }
+
+  if (!healthy) {
+    // Re-read the state IMMEDIATELY before touching the unit. The check above
+    // happened up to POST_SETTLE_HEALTH_TIMEOUT_MS ago, and that answer goes
+    // stale: with Restart=always (RestartSec=10) a container that starts, fails
+    // its health probe and dies is back in `activating` — a fresh `podman run`
+    // creating a container — within seconds. Deciding off the pre-poll state
+    // would stop the unit right on top of that create, which is the wedge this
+    // whole block exists to prevent. waitWhileActivating also rides out a
+    // create that is merely slow, so the common case costs one DBus read.
+    const current = await waitWhileActivating(SIGNALK_UNIT);
+    if (!isSafeToStop(current)) return handsOff(current);
   }
 
   if (!healthy) {
