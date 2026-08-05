@@ -178,6 +178,28 @@ describe('performSwitch — activation gate before rollback', () => {
     expect(mockRewriteQuadletImage).toHaveBeenCalledTimes(2);
   });
 
+  // A rollback must never leave the unit DELIBERATELY stopped. We now stop
+  // before the Quadlet rewrite, and an intentional Stop suppresses Restart=, so
+  // anything that skips the start turns a rollback into an outage. daemonReload
+  // and startUnit therefore live in separate safe() calls.
+  //
+  // Counting matters here: startUnit is also called by the normal restart at
+  // step 5, so toHaveBeenCalled() passes even when the rollback never starts it.
+  it('still starts the unit when the rollback daemon-reload fails', async () => {
+    const { performSwitch } = await import('../src/switch-service.js');
+    mockWaitWhileActivating.mockResolvedValue('failed');
+    // First call is the normal restart's reload; the rollback's call fails.
+    mockDaemonReload.mockResolvedValueOnce(undefined).mockRejectedValue(new Error('bus busy'));
+
+    const result = await performSwitch({ tag: 'new' });
+
+    expect(result.rolledBack).toBe(true);
+    expect(mockStopUnitAndWait).toHaveBeenCalledTimes(2);
+    // Twice: the normal restart's start, and the rollback's — the point of this
+    // test. One call means the unit was stopped and never brought back.
+    expect(mockStartUnit).toHaveBeenCalledTimes(2);
+  });
+
   it('still rolls back when the start genuinely failed', async () => {
     const { performSwitch } = await import('../src/switch-service.js');
     mockWaitWhileActivating.mockResolvedValue('failed');
@@ -192,6 +214,17 @@ describe('performSwitch — activation gate before rollback', () => {
     expect(mockStopUnitAndWait).toHaveBeenCalledWith('signalk-server.service');
     // Quadlet rewritten twice: once to the new tag, once back to the old.
     expect(mockRewriteQuadletImage).toHaveBeenCalledTimes(2);
+    // ORDER MATTERS: the rollback stop must be dispatched before the rollback
+    // Quadlet rewrite. The safe-state decision is only valid until the next
+    // await, and rewriteQuadletImage fsyncs — seconds on an SD card, inside
+    // RestartSec=10 — so a rewrite-then-stop ordering reopens the window for an
+    // unhealthy container to crashloop back into a live container create.
+    expect(mockStopUnitAndWait.mock.invocationCallOrder[1]).toBeLessThan(
+      mockRewriteQuadletImage.mock.invocationCallOrder[1] as number,
+    );
+    expect(mockStopUnitAndWait.mock.invocationCallOrder[1]).toBeLessThan(
+      mockDaemonReload.mock.invocationCallOrder[1] as number,
+    );
   });
 
   it('rolls back from inactive too — the start is provably over', async () => {
@@ -274,5 +307,14 @@ describe('performDoctorSwitch — activation gate before rollback', () => {
     expect(mockStopUnitAndWait).toHaveBeenCalledTimes(2);
     expect(mockStopUnitAndWait).toHaveBeenCalledWith('signalk-doctor-server.service');
     expect(mockRewriteQuadletImage).toHaveBeenCalledTimes(2);
+    // Same ordering rule as the server flow: stop before the rollback rewrite
+    // and daemon-reload, so no fsync or DBus round trip sits between the
+    // safe-state decision and the stop.
+    expect(mockStopUnitAndWait.mock.invocationCallOrder[1]).toBeLessThan(
+      mockRewriteQuadletImage.mock.invocationCallOrder[1] as number,
+    );
+    expect(mockStopUnitAndWait.mock.invocationCallOrder[1]).toBeLessThan(
+      mockDaemonReload.mock.invocationCallOrder[1] as number,
+    );
   });
 });

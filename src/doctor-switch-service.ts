@@ -252,12 +252,19 @@ async function doDoctorSwitch(input: DoctorSwitchInput): Promise<SwitchResult> {
       error: `signalk-doctor-server did not become healthy within ${timeoutMs}ms`,
     });
     if (previousImage) {
+      // Stop first, before the fsyncing Quadlet rewrite and the daemon-reload
+      // DBus round trip — both take seconds on an SD card, and the safe-state
+      // decision above is only valid until the next await. Mirrors
+      // switch-service.ts.
+      await safe(() => stopUnitAndWait(DOCTOR_UNIT));
       await rewriteQuadletImage(DOCTOR_QUADLET, previousImage).catch(() => undefined);
-      await safe(async () => {
-        await daemonReload();
-        await stopUnitAndWait(DOCTOR_UNIT);
-        await startUnit(DOCTOR_UNIT);
-      });
+      // Separate safe() calls, NOT one block: we have already stopped the unit,
+      // and an intentional Stop suppresses Restart=, so anything that skips the
+      // start leaves it deliberately down. Sharing a try with daemonReload would
+      // make a reload failure turn a rollback into an outage. Always attempt the
+      // start, even against a stale unit definition.
+      await safe(() => daemonReload());
+      await safe(() => startUnit(DOCTOR_UNIT));
     }
     emit({
       stage: 'failed',

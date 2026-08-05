@@ -315,12 +315,26 @@ async function doSwitch(input: SwitchInput): Promise<SwitchResult> {
       error: `signalk-server did not become healthy within ${timeoutMs}ms`,
     });
     if (previousImage) {
+      // STOP FIRST, before any other I/O. The safe-state decision above is only
+      // valid for as long as nothing else awaits: rewriteQuadletImage fsyncs
+      // (tmp + rename + dir-fsync) and daemonReload is a DBus round trip, and on
+      // an SD card those take seconds — comfortably inside RestartSec=10. An
+      // unhealthy container that exits in that gap is back in `activating` with
+      // a fresh `podman run` in flight, and the stop would land on the create.
+      // Stopping first shrinks the window to the call itself.
+      //
+      // Ordering is safe: an intentional Stop suppresses the Restart= policy for
+      // that transition, so the unit stays down while the Quadlet is rewritten,
+      // and the startUnit below picks up the rolled-back image either way.
+      await safe(() => stopUnitAndWait(SIGNALK_UNIT));
       await rewriteQuadletImage(SIGNALK_QUADLET, previousImage).catch(() => undefined);
-      await safe(async () => {
-        await daemonReload();
-        await stopUnitAndWait(SIGNALK_UNIT);
-        await startUnit(SIGNALK_UNIT);
-      });
+      // Separate safe() calls, NOT one block: we have already stopped the unit,
+      // and an intentional Stop suppresses Restart=, so anything that skips the
+      // start leaves it deliberately down. Sharing a try with daemonReload would
+      // make a reload failure turn a rollback into an outage. Always attempt the
+      // start, even against a stale unit definition.
+      await safe(() => daemonReload());
+      await safe(() => startUnit(SIGNALK_UNIT));
     }
     publishSwitchEvent({
       stage: 'failed',
