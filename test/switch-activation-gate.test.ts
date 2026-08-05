@@ -219,7 +219,14 @@ describe('performSwitch — activation gate before rollback', () => {
     expect(result.error).toMatch(/could not confirm the unit stopped/i);
     // Deliberately still attempted: bailing here would leave the nav server
     // stopped on the broken tag. See the comment on the rollback block.
+    //
+    // Assert the WHOLE recovery sequence, not a sample of it. Restoring the
+    // Quadlet, applying it, and starting the unit are three separate steps, and
+    // checking only two lets a later change silently drop the third while this
+    // test stays green -- and "recovery still attempted" is the entire claim
+    // being made here.
     expect(mockRewriteQuadletImage).toHaveBeenCalledTimes(2);
+    expect(mockDaemonReload).toHaveBeenCalledTimes(2);
     expect(mockStartUnit).toHaveBeenCalledTimes(2);
   });
 
@@ -336,6 +343,9 @@ describe('performDoctorSwitch — activation gate before rollback', () => {
 
     expect(result.rolledBack).toBe(false);
     expect(result.error).toMatch(/could not confirm the unit stopped/i);
+    // Same full-sequence check as the server case.
+    expect(mockRewriteQuadletImage).toHaveBeenCalledTimes(2);
+    expect(mockDaemonReload).toHaveBeenCalledTimes(2);
     expect(mockStartUnit).toHaveBeenCalledTimes(2);
   });
 
