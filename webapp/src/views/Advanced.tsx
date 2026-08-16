@@ -45,8 +45,9 @@ export function Advanced() {
 
   const applyResponse = useCallback(
     async (next: VersionSettingsResponse, message: string): Promise<void> => {
-      // Refresh through the hook so every consumer of the settings sees
-      // the same object; the PUT response tells us it succeeded.
+      // Re-read through the hook so this view's `settings.data` is the
+      // server-canonical value (the input is seeded from it); the PUT
+      // response is used for the toast.
       await settings.refresh();
       setFieldError(null);
       toast.show(

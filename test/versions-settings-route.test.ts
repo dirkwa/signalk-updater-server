@@ -152,6 +152,17 @@ describe('PUT /api/versions/settings imageRepo', () => {
     expect(onDisk).not.toHaveProperty('bogus');
   });
 
+  it('tolerates a primitive JSON body instead of throwing on `in`', async () => {
+    const res = await app.inject({
+      method: 'PUT',
+      url: '/api/versions/settings',
+      headers: { ...auth, 'content-type': 'application/json' },
+      payload: '"just-a-string"',
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ imageRepo: null, imageRepoSource: 'default' });
+  });
+
   it('requires a bearer token', async () => {
     const res = await putSettings({ imageRepo: 'ghcr.io/someone/signalk-server' }, {});
     expect(res.statusCode).toBe(401);

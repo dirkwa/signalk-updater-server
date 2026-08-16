@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 /**
  * The signalk-server image repo is a runtime setting (Advanced tab). These
@@ -80,6 +80,12 @@ const { performSwitch } = await import('../src/switch-service.js');
 
 const FORK = 'ghcr.io/fork/signalk-server';
 const DIRKWA = 'ghcr.io/dirkwa/signalk-server';
+const prevSignalkImage = process.env.SIGNALK_IMAGE;
+
+afterEach(() => {
+  if (prevSignalkImage === undefined) delete process.env.SIGNALK_IMAGE;
+  else process.env.SIGNALK_IMAGE = prevSignalkImage;
+});
 
 beforeEach(() => {
   for (const m of [

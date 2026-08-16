@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { Advanced } from './Advanced';
 import { ToastProvider } from '../toast';
@@ -83,10 +83,6 @@ function renderAdvanced() {
 }
 
 describe('Advanced', () => {
-  beforeEach(() => {
-    // Each test installs its own fetch stub.
-  });
-
   afterEach(() => {
     vi.restoreAllMocks();
     globalThis.fetch = originalFetch;

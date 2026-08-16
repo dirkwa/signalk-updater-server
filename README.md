@@ -4,7 +4,7 @@ Peer engine container for the SignalK container stack. Owns the lifecycle of `si
 
 This is **not a SignalK plugin** — it runs in its own container alongside `signalk-server`, not inside it. It survives signalk-server being down for any reason, because it is what brings signalk-server back up.
 
-> Status: **skeleton**. Only `GET /api/health` is implemented. The real feature set lands in Phase 4.
+> Status: **1.x**. Version listing/switching, self-update, doctor-update, hardware passthrough, log streaming and the Updater Console webapp are all in place; see AGENTS.md for the route map.
 
 ## Companion repos
 

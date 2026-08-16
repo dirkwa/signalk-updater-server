@@ -184,8 +184,11 @@ export async function registerVersionRoutes(app: FastifyInstance): Promise<void>
       const patch: Partial<VersionSettings> = {};
       if (typeof req.body?.showBeta === 'boolean') patch.showBeta = req.body.showBeta;
       if (typeof req.body?.showMaster === 'boolean') patch.showMaster = req.body.showMaster;
-      if (req.body && 'imageRepo' in req.body) {
-        const raw = req.body.imageRepo;
+      // Narrow before `in`: Fastify's JSON parser accepts primitive
+      // bodies too, and `'x' in "string"` throws.
+      const body: unknown = req.body;
+      if (typeof body === 'object' && body !== null && 'imageRepo' in body) {
+        const raw = (body as { imageRepo?: unknown }).imageRepo;
         if (raw === null || raw === '') {
           patch.imageRepo = null;
         } else if (typeof raw === 'string') {
