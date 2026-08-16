@@ -348,7 +348,8 @@ describe('listArchives / loadArchive / deleteArchive', () => {
     writeFileSync(join(images, 'b.tar.gz'), gzipSync(dockerArchive(['ghcr.io/x/y:2.0.0'])));
     writeFileSync(join(images, 'notes.txt'), 'ignored');
     writeFileSync(join(images, '.hidden.tar'), 'ignored');
-    listImagesPayload = [{ Id: 'sha256:' + 'b'.repeat(64), RepoTags: ['ghcr.io/x/y:2.0.0'] }];
+    // b's tag is in the store AND resolves to the archive's image id → loaded.
+    listImagesPayload = [{ Id: `sha256:${CFG_HEX}`, RepoTags: ['ghcr.io/x/y:2.0.0'] }];
 
     const r = await listArchives();
     expect(r.archives.map((a) => a.name)).toEqual(['a.tar', 'b.tar.gz']);
@@ -361,9 +362,17 @@ describe('listArchives / loadArchive / deleteArchive', () => {
     expect(Date.parse(a.mtime)).not.toBeNaN();
   });
 
-  it('marks loaded by image id too, and caches peeks by size+mtime', async () => {
+  it('"loaded" means the ref resolves to THIS archive\'s image, and peeks are cached by size+mtime', async () => {
     writeFileSync(join(images, 'a.tar'), dockerArchive(['ghcr.io/x/y:1.0.0']));
+    // Same id in the store but under a different tag → a Switch to the
+    // archive's ref would not start it → not loaded.
     listImagesPayload = [{ Id: `sha256:${CFG_HEX}`, RepoTags: ['something/else:1'] }];
+    expect((await listArchives()).archives[0]?.loaded).toBe(false);
+    // The tag exists but points at a DIFFERENT image (re-pulled later) → not loaded.
+    listImagesPayload = [{ Id: 'sha256:' + 'e'.repeat(64), RepoTags: ['ghcr.io/x/y:1.0.0'] }];
+    expect((await listArchives()).archives[0]?.loaded).toBe(false);
+    // Tag present and resolving to the archive's id → loaded.
+    listImagesPayload = [{ Id: `sha256:${CFG_HEX}`, RepoTags: ['ghcr.io/x/y:1.0.0'] }];
     expect((await listArchives()).archives[0]?.loaded).toBe(true);
 
     // Second listing hits the index — no re-peek even if the file changed

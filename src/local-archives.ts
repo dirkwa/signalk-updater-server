@@ -169,18 +169,41 @@ async function peekArchive(path: string, format: 'tar' | 'tgz'): Promise<Map<str
 
 // -------------------------------------------------------- local image set
 
-async function localImageSet(): Promise<{ tags: Set<string>; ids: Set<string> } | null> {
+async function localImageSet(): Promise<{ tagToId: Map<string, string>; ids: Set<string> } | null> {
   const rt = await resolveRuntime();
   if (!rt) return null;
   const r = await safe(() => rt.client.listImages({}));
   if (!r.ok) return null;
-  const tags = new Set<string>();
+  const tagToId = new Map<string, string>();
   const ids = new Set<string>();
   for (const img of r.value as Array<{ Id: string; RepoTags?: string[] | null }>) {
     ids.add(img.Id);
-    for (const t of img.RepoTags ?? []) tags.add(t);
+    for (const t of img.RepoTags ?? []) tagToId.set(t, img.Id);
   }
-  return { tags, ids };
+  return { tagToId, ids };
+}
+
+/**
+ * "Loaded" answers "will a Switch to this archive's ref start THIS
+ * archive's image?" — so the ref must exist in the store and, when the
+ * archive tells us its image id (docker-archive), the tag must resolve to
+ * that id (a later pull can re-take the tag for a different image). An
+ * archive with an id but no ref counts as loaded when the id is present
+ * (it still can't be switched to — the route says so).
+ */
+export function isLoaded(
+  a: Pick<ArchiveInfo, 'refs' | 'imageId'>,
+  local: { tagToId: Map<string, string>; ids: Set<string> },
+): boolean {
+  const refs = a.refs ?? [];
+  if (refs.length > 0) {
+    return refs.some((ref) => {
+      const id = local.tagToId.get(ref);
+      if (id === undefined) return false;
+      return a.imageId === null || id === a.imageId;
+    });
+  }
+  return a.imageId !== null && local.ids.has(a.imageId);
 }
 
 // ---------------------------------------------------------------- listing
@@ -188,7 +211,8 @@ async function localImageSet(): Promise<{ tags: Set<string>; ids: Set<string> } 
 /**
  * Enumerate the folder. Creates it on first call so the operator finds it
  * ready. Peeks new/changed files, refreshes the index, and marks each
- * archive `loaded` when podman already has its ref or image id.
+ * archive `loaded` when its ref is in podman's store and resolves to the
+ * archive's image (see {@link isLoaded}).
  */
 export async function listArchives(): Promise<ArchivesResponse> {
   const dir = localImagesDir();
@@ -246,10 +270,7 @@ export async function listArchives(): Promise<ArchivesResponse> {
   const local = await localImageSet();
   const archives: ArchiveInfo[] = rows.map((r) => ({
     ...r,
-    loaded:
-      local !== null &&
-      ((r.refs ?? []).some((ref) => local.tags.has(ref)) ||
-        (r.imageId !== null && local.ids.has(r.imageId))),
+    loaded: local !== null && isLoaded(r, local),
   }));
   return { dir, archives };
 }

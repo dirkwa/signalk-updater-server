@@ -247,8 +247,9 @@ export interface ArchiveInfo {
   /** Image id (`sha256:…`) from a docker-archive manifest; null for OCI
    *  archives and unpeekable files. */
   imageId: string | null;
-  /** True when podman already has this image (by ref or by id), i.e. the
-   *  archive has been loaded and a Switch needs no registry. */
+  /** True when a Switch to this archive's ref would start THIS archive's
+   *  image: the ref is in podman's store and (when the archive carries an
+   *  image id) resolves to it. Then a Switch needs no registry. */
   loaded: boolean;
 }
 
