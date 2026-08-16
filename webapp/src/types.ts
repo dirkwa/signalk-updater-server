@@ -31,6 +31,10 @@ export interface ContainerSnapshot {
    *  the running version when the Quadlet pins a floating ref; use
    *  `version` for that. */
   tag: string;
+  /** OperatorIntent: repository part of the Quadlet's `Image=` line
+   *  (`ghcr.io/dirkwa/signalk-server`), no tag. Absent when the Quadlet is
+   *  unreadable or has no tag. */
+  imageRepo?: string;
   /** Image digest from dockerode. Kept on the wire for backward compat
    *  with the pre-runtime-version webapp; the new Dashboard renders
    *  `version`/`channel` instead. */
@@ -199,6 +203,18 @@ export interface VersionsResponse {
 export interface VersionSettings {
   showBeta: boolean;
   showMaster: boolean;
+  /** Operator override for the signalk-server image repository, canonical
+   *  `ghcr.io/<owner>/<name>`; `null` = server default. */
+  imageRepo: string | null;
+}
+
+export type ImageRepoSource = 'setting' | 'default';
+
+/** Wire shape of GET/PUT /api/versions/settings. */
+export interface VersionSettingsResponse extends VersionSettings {
+  effectiveImageRepo: string;
+  imageRepoSource: ImageRepoSource;
+  defaultImageRepo: string;
 }
 
 export interface LocalImage {

@@ -28,6 +28,7 @@ import type {
   ImageState,
   SwitchProgressEvent,
   VersionSettings,
+  VersionSettingsResponse,
   VersionsResponse,
 } from '../types';
 
@@ -37,8 +38,16 @@ const CHANNEL_DESCRIPTIONS: Record<Channel, string> = {
   stable: 'Production releases — long-tested, recommended for boats in use.',
   beta: 'Pre-release builds — newer features, may have rough edges.',
   master: 'Bleeding edge from the master branch — every commit on signalk-server/main.',
-  dirkwa: 'Custom builds maintained in dirkwa/signalk-server.',
+  // The dirkwa bucket also collects every unrecognised tag, so for a fork
+  // repo (Advanced tab) this card is what the operator sees — name the
+  // repo actually being listed rather than a hard-coded owner.
+  dirkwa: 'Custom builds maintained in the configured image repository.',
 };
+
+function channelDescription(channel: Channel, imageRepo: string | undefined): string {
+  if (channel === 'dirkwa' && imageRepo) return `Custom builds maintained in ${imageRepo}.`;
+  return CHANNEL_DESCRIPTIONS[channel];
+}
 
 const STAGE_LABELS: Record<SwitchProgressEvent['stage'], string> = {
   idle: 'Idle',
@@ -144,7 +153,9 @@ export function Versions() {
   const state = useApi<CurrentState>((signal) => api('/api/state', { signal }), {
     intervalMs: 5000,
   });
-  const settings = useApi<VersionSettings>((signal) => api('/api/versions/settings', { signal }));
+  const settings = useApi<VersionSettingsResponse>((signal) =>
+    api('/api/versions/settings', { signal }),
+  );
   // Image-level freshness for signalk-server's movable tag (`:dirkwa`,
   // `:master`, `:latest`). For these tags the semver never moves between
   // builds, so a digest-derived imageState is the only honest "is the
@@ -335,7 +346,15 @@ export function Versions() {
     [confirm, toast],
   );
 
-  const currentTag = state.data?.signalkServer.tag ?? null;
+  // Repo the Quadlet currently points at vs. the repo we're listing (the
+  // Advanced-tab setting). When they differ, a same-named tag in the new
+  // repo is NOT the running image — suppress the "current" badge and say
+  // so, instead of implying the operator is already on the new repo.
+  const runningRepo = state.data?.signalkServer.imageRepo;
+  const listedRepo = settings.data?.effectiveImageRepo;
+  const repoMismatch =
+    runningRepo !== undefined && listedRepo !== undefined && runningRepo !== listedRepo;
+  const currentTag = repoMismatch ? null : (state.data?.signalkServer.tag ?? null);
   // Digest-level freshness of the in-use tag. Merges the instant,
   // network-free signal from /api/state with the GHCR-cadence signal from
   // /api/updates/available (the only one that ever reports
@@ -384,6 +403,14 @@ export function Versions() {
         />
       </Form>
 
+      {repoMismatch ? (
+        <Alert color="info" className="mb-3">
+          signalk-server is currently running from <code>{runningRepo}</code>; the list below comes
+          from <code>{listedRepo}</code> (Advanced tab). The next Switch moves signalk-server to
+          that repository.
+        </Alert>
+      ) : null}
+
       {progress !== null && progress.stage !== 'idle' ? <ProgressCard event={progress} /> : null}
 
       {versions.error !== null ? (
@@ -404,6 +431,7 @@ export function Versions() {
                 tags={tags}
                 currentTag={currentTag}
                 currentImageState={currentImageState}
+                imageRepo={listedRepo}
                 pullingTag={pullingTag}
                 switchInFlight={switchInFlight}
                 onPull={doPull}
@@ -485,6 +513,8 @@ interface ChannelCardProps {
   tags: AnnotatedTag[];
   currentTag: string | null;
   currentImageState: ImageState;
+  /** Repo being listed (for the dirkwa card's description). */
+  imageRepo: string | undefined;
   pullingTag: string | null;
   switchInFlight: boolean;
   onPull: (tag: string) => void;
@@ -496,6 +526,7 @@ function ChannelCard({
   tags,
   currentTag,
   currentImageState,
+  imageRepo,
   pullingTag,
   switchInFlight,
   onPull,
@@ -508,7 +539,7 @@ function ChannelCard({
       <CardHeader className="d-flex justify-content-between align-items-center">
         <div>
           <strong className="text-capitalize">{channel}</strong>
-          <span className="text-muted small ms-2">{CHANNEL_DESCRIPTIONS[channel]}</span>
+          <span className="text-muted small ms-2">{channelDescription(channel, imageRepo)}</span>
         </div>
         <Badge color="light" className="border text-dark">
           {tags.length} {tags.length === 1 ? 'tag' : 'tags'}

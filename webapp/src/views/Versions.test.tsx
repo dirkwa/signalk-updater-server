@@ -4,7 +4,12 @@ import { Versions } from './Versions';
 import { ToastProvider } from '../toast';
 import { ConfirmProvider } from '../confirm';
 import { StubEventSource } from '../../test-setup';
-import type { AvailableUpdates, CurrentState, VersionSettings, VersionsResponse } from '../types';
+import type {
+  AvailableUpdates,
+  CurrentState,
+  VersionSettingsResponse,
+  VersionsResponse,
+} from '../types';
 
 // vi.restoreAllMocks() resets vi.fn spies but doesn't undo a direct
 // globalThis.fetch assignment. Snapshot and restore by hand so a
@@ -69,6 +74,7 @@ const sampleVersions: VersionsResponse = {
 const sampleState: CurrentState = {
   signalkServer: {
     tag: 'v2.24.0',
+    imageRepo: 'ghcr.io/dirkwa/signalk-server',
     digest: 'sha256:aaa111',
     state: 'running',
     version: '2.24.0',
@@ -92,7 +98,14 @@ const sampleState: CurrentState = {
   lastCheck: new Date().toISOString(),
 };
 
-const defaultSettings: VersionSettings = { showBeta: false, showMaster: false };
+const defaultSettings: VersionSettingsResponse = {
+  showBeta: false,
+  showMaster: false,
+  imageRepo: null,
+  effectiveImageRepo: 'ghcr.io/dirkwa/signalk-server',
+  imageRepoSource: 'default',
+  defaultImageRepo: 'ghcr.io/dirkwa/signalk-server',
+};
 
 // No-drift default so the existing tests (which don't exercise the in-use
 // drift action) keep rendering the inert "In use" text.
@@ -204,6 +217,30 @@ describe('Versions', () => {
     // exact action-cell text — "in use" appears in the channel
     // description ("recommended for boats in use") too.
     expect(await screen.findByText('In use')).toBeInTheDocument();
+  });
+
+  it('drops the current badge and explains when the listed repo differs from the running one', async () => {
+    const forkSettings: VersionSettingsResponse = {
+      ...defaultSettings,
+      imageRepo: 'ghcr.io/someone/signalk-server',
+      effectiveImageRepo: 'ghcr.io/someone/signalk-server',
+      imageRepoSource: 'setting',
+    };
+    mockFetch({
+      '/api/versions': sampleVersions,
+      '/api/state': sampleState,
+      '/api/versions/settings': forkSettings,
+      '/api/updates/available': noUpdates,
+    });
+    renderVersions();
+    await screen.findByText('stable');
+    // The mismatch alert names both repos…
+    expect(await screen.findByText('ghcr.io/someone/signalk-server')).toBeInTheDocument();
+    expect(screen.getByText('ghcr.io/dirkwa/signalk-server')).toBeInTheDocument();
+    // …and v2.24.0 (running from the OLD repo) is not badged as current in
+    // the fork's list.
+    expect(screen.queryByText('current')).not.toBeInTheDocument();
+    expect(screen.queryByText('In use')).not.toBeInTheDocument();
   });
 
   it('offers Switch on locally-cached non-current tags', async () => {

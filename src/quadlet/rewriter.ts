@@ -72,8 +72,9 @@ export async function pruneSnapshots(quadletName: string, keep = 10): Promise<vo
 }
 
 /**
- * Rewrite a single `Image=` line in a Quadlet file with a new tag.
- * Preserves the image base; only swaps the tag portion (text after the last `:`).
+ * Rewrite the first `Image=` line in a Quadlet file to `newImage` — the
+ * WHOLE ref (registry/repo:tag), not just the tag, so a repository change
+ * (Advanced tab) propagates on the next switch.
  *
  * Returns the previous image string for rollback.
  */
