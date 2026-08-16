@@ -29,6 +29,10 @@ import { join } from 'node:path';
 
 const DIST = join(process.cwd(), 'dist', 'index.js');
 const TOKEN = 'e2e-image-repo-token';
+// Test-unique owner so no dev box or CI runner can plausibly have images
+// under it — the "no local images for the fork" assertion depends on that.
+const FORK_OWNER = `e2e-${process.pid.toString(36)}-${Date.now().toString(36)}`;
+const FORK = `ghcr.io/${FORK_OWNER}/signalk-server`;
 const FAKE_QUADLET_IMAGE = 'ghcr.io/dirkwa/signalk-server:dirkwa-e2e0001';
 
 async function freePort(): Promise<number> {
@@ -139,7 +143,7 @@ describe.skipIf(!existsSync(DIST))('e2e: image repo setting through the built en
     const noAuth = await fetch(settingsUrl(), {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ imageRepo: 'ghcr.io/fork/signalk-server' }),
+      body: JSON.stringify({ imageRepo: FORK }),
     });
     expect(noAuth.status).toBe(401);
 
@@ -160,25 +164,24 @@ describe.skipIf(!existsSync(DIST))('e2e: image repo setting through the built en
     const put = await fetch(settingsUrl(), {
       method: 'PUT',
       headers: auth,
-      body: JSON.stringify({ imageRepo: 'https://GHCR.io/Fork/SignalK-Server/' }),
+      // Mixed case + scheme + trailing slash → canonical form.
+      body: JSON.stringify({
+        imageRepo: `https://GHCR.io/${FORK_OWNER.toUpperCase()}/SignalK-Server/`,
+      }),
     });
     expect(put.status).toBe(200);
     expect(await put.json()).toMatchObject({
-      imageRepo: 'ghcr.io/fork/signalk-server',
-      effectiveImageRepo: 'ghcr.io/fork/signalk-server',
+      imageRepo: FORK,
+      effectiveImageRepo: FORK,
       imageRepoSource: 'setting',
       defaultImageRepo: 'ghcr.io/dirkwa/signalk-server',
     });
 
     const onDisk = JSON.parse(await readFile(join(dir, 'data', 'version-settings.json'), 'utf8'));
-    expect(onDisk).toEqual({
-      showBeta: false,
-      showMaster: false,
-      imageRepo: 'ghcr.io/fork/signalk-server',
-    });
+    expect(onDisk).toEqual({ showBeta: false, showMaster: false, imageRepo: FORK });
 
     const get = (await (await fetch(settingsUrl())).json()) as { effectiveImageRepo: string };
-    expect(get.effectiveImageRepo).toBe('ghcr.io/fork/signalk-server');
+    expect(get.effectiveImageRepo).toBe(FORK);
   });
 
   it('exposes the Quadlet repo on /api/state so the webapp can flag the mismatch', async () => {

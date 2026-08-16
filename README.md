@@ -36,10 +36,8 @@ always returns to the exact image ref it was recorded from, even after a reposit
 
 Precedence: the Advanced-tab setting wins; when unset, `SIGNALK_IMAGE` (an env override on the
 engine container, meant for dev/CI) is the default; when neither is set, the built-in dirkwa repo.
-`GET /api/versions/settings` reports `effectiveImageRepo`, `imageRepoSource` (`setting` |
-`default`) and `defaultImageRepo` so you can see which one is in effect. Only `ghcr.io`
-repositories are supported — the engine talks to GHCR's registry API for tag listing and drift
-detection.
+The Advanced tab shows which one is in effect. Only `ghcr.io` repositories are supported — the
+engine talks to GHCR's registry API for tag listing and drift detection.
 
 ## Local dev
 
