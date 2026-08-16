@@ -47,7 +47,13 @@ vi.mock('../src/container-ops.js', () => ({
   trialRun: (ref: string, prefix: string) => mockTrialRun(ref, prefix),
 }));
 
+const mockInspectImage = vi.fn();
 vi.mock('../src/podman/client.js', () => ({
+  resolveRuntime: async () => ({
+    kind: 'podman',
+    socketPath: '/dev/null',
+    client: { getImage: (ref: string) => ({ inspect: () => mockInspectImage(ref) }) },
+  }),
   safe: async (fn: () => Promise<unknown>) => {
     try {
       return { ok: true as const, value: await fn() };
@@ -70,6 +76,10 @@ vi.mock('../src/image-retention.js', () => ({
   pruneOldImagesFor: (repo: string, name: string, opts: unknown) => mockPrune(repo, name, opts),
 }));
 vi.mock('../src/update-checker.js', () => ({ invalidate: vi.fn() }));
+const mockRecordImageSource = vi.fn();
+vi.mock('../src/image-source.js', () => ({
+  recordImageSource: (q: string, rec: unknown) => mockRecordImageSource(q, rec),
+}));
 vi.mock('../src/last-outcome.js', () => ({ recordOutcome: vi.fn() }));
 vi.mock('../src/signalk-url-resolver.js', () => ({
   resolveSignalkHealthUrl: () => Promise.resolve('http://127.0.0.1/signalk'),
@@ -95,9 +105,13 @@ beforeEach(() => {
     mockPullImage,
     mockTrialRun,
     mockPrune,
+    mockInspectImage,
+    mockRecordImageSource,
   ]) {
     m.mockReset();
   }
+  mockInspectImage.mockResolvedValue({ Id: 'sha256:local' });
+  mockRecordImageSource.mockResolvedValue(undefined);
   delete process.env.SIGNALK_IMAGE;
   mockReadVersionSettings.mockResolvedValue({
     showBeta: false,
@@ -200,5 +214,53 @@ describe('performSwitch — image repo setting', () => {
     expect(mockPullImage).toHaveBeenCalledWith(`${DIRKWA}:dirkwa-new`);
     const [, , opts] = mockPrune.mock.calls[0] as [string, string, { protectTags: string[] }];
     expect(opts.protectTags).toContain('dirkwa-old');
+  });
+
+  it('records registry provenance after a normal switch', async () => {
+    mockRewriteQuadletImage.mockResolvedValue({
+      previousImage: `${FORK}:v2.23.1`,
+      snapshotPath: '/s',
+    });
+    await performSwitch({ tag: 'v2.24.0' });
+    expect(mockRecordImageSource).toHaveBeenCalledWith('signalk-server.container', {
+      ref: `${FORK}:v2.24.0`,
+      source: 'registry',
+    });
+  });
+
+  it('skipPull: never pulls, confirms the local image, records archive provenance', async () => {
+    mockRewriteQuadletImage.mockResolvedValue({
+      previousImage: `${DIRKWA}:dirkwa-old`,
+      snapshotPath: '/s',
+    });
+    const result = await performSwitch({
+      tag: '2.24.0',
+      image: `${DIRKWA}:2.24.0`,
+      skipPull: true,
+      source: { kind: 'archive', name: 'sk.tar', mtimeMs: 1234 },
+    });
+    expect(result.ok).toBe(true);
+    expect(mockPullImage).not.toHaveBeenCalled();
+    expect(mockInspectImage).toHaveBeenCalledWith(`${DIRKWA}:2.24.0`);
+    expect(mockTrialRun).toHaveBeenCalledWith(`${DIRKWA}:2.24.0`, expect.any(String));
+    expect(mockRewriteQuadletImage).toHaveBeenCalledWith(
+      'signalk-server.container',
+      `${DIRKWA}:2.24.0`,
+    );
+    expect(mockRecordImageSource).toHaveBeenCalledWith('signalk-server.container', {
+      ref: `${DIRKWA}:2.24.0`,
+      source: 'archive',
+      archive: 'sk.tar',
+      archiveMtimeMs: 1234,
+    });
+  });
+
+  it('skipPull: fails cleanly (no rewrite) when the image is not in the local store', async () => {
+    mockInspectImage.mockRejectedValue(new Error('no such image'));
+    const result = await performSwitch({ tag: '9.9.9', image: `${DIRKWA}:9.9.9`, skipPull: true });
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/not in local store/);
+    expect(mockRewriteQuadletImage).not.toHaveBeenCalled();
+    expect(mockPullImage).not.toHaveBeenCalled();
   });
 });

@@ -3,6 +3,8 @@ import { compareSemver, pickLatestForChannel } from './tagClassifier.js';
 import { fetchDriftReport } from './drift-client.js';
 import { getRuntimeIdentity, type VersionTarget } from './runtime-version.js';
 import { getImageDrift } from './image-drift.js';
+import { resolveImageSource } from './image-source.js';
+import { listArchives } from './local-archives.js';
 import { getSelfVersion } from './routes/health.js';
 import { resolveDoctorHealthUrl, resolveSignalkHealthUrl } from './signalk-url-resolver.js';
 import type { AvailableUpdates, Channel, UpdateInfo } from './types.js';
@@ -105,19 +107,55 @@ async function checkOne(image: string, target: VersionTarget): Promise<UpdateInf
 
 // signalk-server has no GHCR semver release stream we track (it follows
 // upstream SignalK/signalk-server, not dirkwa's own publish cadence), so
-// its UpdateInfo is image-state-only: the rolling `:dirkwa` tag's digest
-// movement is the entire signal. No semver availableTag, no
-// semver-driven updateAvailable.
+// its UpdateInfo is SOURCE-AWARE image-state:
+//
+//  * source 'registry' (default): the Quadlet's own `Image=` repo is what the
+//    drift check talks to — for an Advanced-tab custom repo that is THAT
+//    repo, never dirkwa's. The rolling tag's digest movement is the signal.
+//  * source 'archive' (switched to from a local image file): GHCR is not
+//    consulted at all (the boat may be offline, and the operator chose the
+//    folder as their source). "Update available" then means a NEWER FILE in
+//    the folder than the one the running image was loaded from
+//    (`availableArchive`). Local restart-required is still detected.
 async function checkSignalk(target: VersionTarget): Promise<UpdateInfo> {
+  const src = await resolveImageSource(target.quadletName);
   const [identity, drift] = await Promise.all([
     getRuntimeIdentity(target),
-    getImageDrift(target.container, target.quadletName, { checkRemote: true }),
+    getImageDrift(target.container, target.quadletName, {
+      checkRemote: src.source !== 'archive',
+    }),
   ]);
+  if (src.source === 'archive') {
+    const newer = await newerArchivesThan(src.archive ?? '', src.archiveMtimeMs ?? 0);
+    const newest = newer[0];
+    return {
+      currentTag: identity.version ?? 'unknown',
+      updateAvailable: newest !== undefined,
+      ...(newest !== undefined ? { availableArchive: newest } : {}),
+      imageState: drift.state,
+      source: 'archive',
+    };
+  }
   return {
     currentTag: identity.version ?? 'unknown',
     updateAvailable: false,
     imageState: drift.state,
+    source: 'registry',
   };
+}
+
+/** Names of local image files newer than the one in use, newest first.
+ *  Best-effort: an unreadable folder means "no news", never a throw. */
+async function newerArchivesThan(currentName: string, currentMtimeMs: number): Promise<string[]> {
+  try {
+    const { archives } = await listArchives();
+    return archives
+      .filter((a) => a.name !== currentName && Date.parse(a.mtime) > currentMtimeMs)
+      .sort((a, b) => Date.parse(b.mtime) - Date.parse(a.mtime))
+      .map((a) => a.name);
+  } catch {
+    return [];
+  }
 }
 
 /**

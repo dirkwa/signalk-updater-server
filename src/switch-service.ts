@@ -1,4 +1,4 @@
-import { safe } from './podman/client.js';
+import { resolveRuntime, safe } from './podman/client.js';
 import { rewriteQuadletImage, writeLastGood } from './quadlet/rewriter.js';
 import {
   daemonReload,
@@ -23,6 +23,7 @@ import { resolveSignalkHealthUrl } from './signalk-url-resolver.js';
 import { recordOutcome } from './last-outcome.js';
 import type { SwitchResult } from './types.js';
 import { repoOfRef, resolveSignalkImage } from './signalk-image.js';
+import { recordImageSource } from './image-source.js';
 
 const SIGNALK_QUADLET = 'signalk-server.container';
 const SIGNALK_UNIT = 'signalk-server.service';
@@ -38,6 +39,13 @@ export interface SwitchInput {
    *  even after the operator changed the repo in the Advanced tab). The
    *  public switch route never forwards this from the client body. */
   image?: string;
+  /** Don't pull: the image is already in the local store (loaded from an
+   *  archive). The pull step becomes a local presence check, so a boat
+   *  with no internet can still switch. Internal only, like `image`. */
+  skipPull?: boolean;
+  /** Provenance to record for the update-checker's source-aware signal.
+   *  Registry switches omit it (recorded as 'registry'). */
+  source?: { kind: 'archive'; name: string; mtimeMs: number };
 }
 
 /**
@@ -61,6 +69,28 @@ async function restoreQuadlet(previousImage: string): Promise<boolean> {
     console.error(`switch: rollback to ${previousImage} failed: ${raw}`);
     return false;
   }
+}
+
+async function pullRemote(newImage: string, tag: string): Promise<{ ok: boolean; error?: string }> {
+  publishSwitchEvent({ stage: 'pulling', to: tag, message: `Pulling ${newImage}…` });
+  return pullImage(newImage);
+}
+
+/** skipPull path: the image must already be in the local store. */
+async function confirmLocalImage(
+  newImage: string,
+  tag: string,
+): Promise<{ ok: boolean; error?: string }> {
+  publishSwitchEvent({ stage: 'pulling', to: tag, message: `Using local image ${newImage}…` });
+  const rt = await resolveRuntime();
+  if (!rt) return { ok: false, error: 'container runtime unreachable' };
+  const r = await safe(() => rt.client.getImage(newImage).inspect());
+  return r.ok
+    ? { ok: true }
+    : {
+        ok: false,
+        error: `image not in local store — load the file first (${r.error.userMessage})`,
+      };
 }
 
 export async function performSwitch(input: SwitchInput): Promise<SwitchResult> {
@@ -116,9 +146,12 @@ async function doSwitch(input: SwitchInput): Promise<SwitchResult> {
     hooksRun.push('backup:failed');
   }
 
-  // 2. Pull
-  publishSwitchEvent({ stage: 'pulling', to: input.tag, message: `Pulling ${newImage}…` });
-  const pull = await pullImage(newImage);
+  // 2. Pull — or, for an archive-loaded image, just confirm it's in the
+  //    local store. No registry round-trip: that's the whole point of
+  //    local image files on an offline boat.
+  const pull = input.skipPull
+    ? await confirmLocalImage(newImage, input.tag)
+    : await pullRemote(newImage, input.tag);
   if (!pull.ok) {
     publishSwitchEvent({
       stage: 'failed',
@@ -434,6 +467,21 @@ async function doSwitch(input: SwitchInput): Promise<SwitchResult> {
     image: newImage,
     snapshotPath,
   }).catch(() => undefined);
+
+  // 7b. Record provenance for the source-aware update signal (best-effort;
+  //     see src/image-source.ts). Archive switches remember the file so
+  //     "update available" can mean "a newer file appeared".
+  await recordImageSource(
+    SIGNALK_QUADLET,
+    input.source
+      ? {
+          ref: newImage,
+          source: 'archive',
+          archive: input.source.name,
+          archiveMtimeMs: input.source.mtimeMs,
+        }
+      : { ref: newImage, source: 'registry' },
+  ).catch(() => undefined);
 
   // 8. Kick the doctor's drift scan. The new image has its own pinned
   //    npm dep set, so the existing drift report is now misleading until

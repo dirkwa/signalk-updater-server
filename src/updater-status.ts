@@ -53,8 +53,24 @@ function imageStateMessage(s: ImageState): string {
 function updateResult(
   id: string,
   label: string,
-  info: { updateAvailable: boolean; availableTag?: string; imageState?: ImageState },
+  info: {
+    updateAvailable: boolean;
+    availableTag?: string;
+    imageState?: ImageState;
+    availableArchive?: string;
+  },
 ): StatusResult {
+  // Archive-sourced install (switched to from a local image file): the only
+  // "update" that exists for it is a NEWER FILE in the folder — GHCR is not
+  // consulted, so nothing else can raise a warn here. See src/image-source.ts.
+  if (info.updateAvailable && info.availableArchive) {
+    return {
+      id,
+      label,
+      status: 'warn',
+      message: `new image file: ${info.availableArchive} — load & switch from the Versions tab`,
+    };
+  }
   if (info.updateAvailable && info.availableTag) {
     return { id, label, status: 'warn', message: `update available: ${info.availableTag}` };
   }

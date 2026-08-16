@@ -89,6 +89,7 @@ export function App() {
     (imageStateNeedsAttention(updates.data?.updater) ? 1 : 0) +
     (imageStateNeedsAttention(updates.data?.doctor) ? 1 : 0);
   const pendingUpdates =
+    (updates.data?.signalkServer.updateAvailable ? 1 : 0) +
     (updates.data?.updater.updateAvailable ? 1 : 0) +
     (updates.data?.doctor.updateAvailable ? 1 : 0) +
     driftingImages +

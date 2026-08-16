@@ -603,6 +603,16 @@ export function Dashboard() {
                     )}
                     onRestart={() => void lifecycle('restart')}
                   />
+                  {updates.data?.signalkServer.availableArchive ? (
+                    <Alert color="warning" className="mt-3 mb-0 py-2 px-3 small">
+                      <div className="fw-semibold mb-1">New image file</div>
+                      <div>
+                        <code>{updates.data.signalkServer.availableArchive}</code> is newer than the
+                        file this server was loaded from.{' '}
+                        <a href="#/versions">Load &amp; switch on the Versions tab</a>.
+                      </div>
+                    </Alert>
+                  ) : null}
                 </>
               ) : (
                 <Spinner size="sm" />

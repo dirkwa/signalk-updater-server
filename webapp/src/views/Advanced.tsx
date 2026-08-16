@@ -15,7 +15,7 @@ import {
 import { api } from '../api';
 import { useApi } from '../hooks/useApi';
 import { useToast } from '../toast';
-import type { VersionSettingsResponse } from '../types';
+import type { ArchivesResponse, VersionSettingsResponse } from '../types';
 
 /**
  * Advanced tab. Currently one setting: the GHCR repository the Versions
@@ -31,6 +31,7 @@ export function Advanced() {
   const settings = useApi<VersionSettingsResponse>((signal) =>
     api('/api/versions/settings', { signal }),
   );
+  const archives = useApi<ArchivesResponse>((signal) => api('/api/versions/archives', { signal }));
   const [draft, setDraft] = useState('');
   const [saving, setSaving] = useState(false);
   const [fieldError, setFieldError] = useState<string | null>(null);
@@ -165,6 +166,50 @@ export function Advanced() {
               </div>
             </Form>
           ) : null}
+        </CardBody>
+      </Card>
+
+      <Card className="mb-3">
+        <CardHeader>
+          <strong>Local image files</strong>
+        </CardHeader>
+        <CardBody>
+          <p className="text-muted mb-2">
+            For boats without internet: put <code>podman save</code> archives into{' '}
+            <code>~/.signalk-updater/images</code> on the host
+            {archives.data ? (
+              <>
+                {' '}
+                (<code>{archives.data.dir}</code> inside the engine)
+              </>
+            ) : null}
+            . The Versions tab lists them under <strong>Local image files</strong>; Load imports the
+            file into the local image store, Switch then restarts signalk-server on it without
+            contacting any registry.
+          </p>
+          <p className="text-muted mb-2">
+            Create an archive on a machine that has internet, then copy it over (scp, SFTP, a file
+            manager, USB stick):
+          </p>
+          <pre className="small mb-2">
+            <code>
+              {[
+                'podman pull ghcr.io/dirkwa/signalk-server:<tag>',
+                'podman save ghcr.io/dirkwa/signalk-server:<tag> -o signalk-server-<tag>.tar',
+                '# or compressed:',
+                'podman save ghcr.io/dirkwa/signalk-server:<tag> | gzip > signalk-server-<tag>.tar.gz',
+              ].join('\n')}
+            </code>
+          </pre>
+          <p className="text-muted small mb-0">
+            <code>.tar</code>, <code>.tar.gz</code> and <code>.tgz</code> are recognised (docker- or
+            OCI-archive). Once signalk-server runs from a local file, &ldquo;update available&rdquo;
+            means a newer file appeared in this folder — the registry is not consulted.{' '}
+            {archives.data
+              ? `${archives.data.archives.length} file${archives.data.archives.length === 1 ? '' : 's'} present.`
+              : null}{' '}
+            <a href="#/versions">Open Versions</a>.
+          </p>
         </CardBody>
       </Card>
     </div>

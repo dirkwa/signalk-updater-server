@@ -298,6 +298,33 @@ reviews:
         last-good entry's full `image` ref so it stays on the repo it
         was recorded from.
 
+        ## Local image files + source-aware updates
+
+        `src/local-archives.ts` / `src/routes/archives.ts` let the
+        operator drop `podman save` archives into a FIXED folder
+        (`LOCAL_IMAGES_DIR`, default `/data/images` = host
+        `~/.signalk-updater/images`). Rules: routes take a bare file NAME
+        validated by `isValidArchiveName` — never a path, so don't ask
+        for path sanitisation or a configurable directory (the engine
+        container only sees its fixed mounts). Archives are PEEKED via
+        `src/tar-peek.ts` (manifest.json / index.json out of the tar;
+        plain tars by seeking, gz streamed once, cached in
+        `/data/archive-index.json` by size+mtime) — never extracted.
+        `loadArchive` streams the file into dockerode `loadImage` (202 +
+        SSE `'loading'` stage under the shared mutex). Switching to a
+        loaded file uses `performSwitch({ image, skipPull: true, source })`
+        — the pull step becomes a local presence check; the rest of the
+        flow is unchanged. Don't suggest pulling "to be safe": offline is
+        the whole point.
+
+        `src/image-source.ts` records per Quadlet whether the running
+        image came from a registry or an archive; `update-checker`'s
+        signalk-server check is source-aware — registry → the Quadlet
+        ref's own repo (a custom repo is checked against itself), archive
+        → NO GHCR call, `updateAvailable` means a newer file in the
+        folder (`availableArchive`). Don't add a GHCR round-trip to the
+        archive branch.
+
         ## Local image enumeration
 
         `src/local-images.ts` enumerates `dockerode.listImages()` and

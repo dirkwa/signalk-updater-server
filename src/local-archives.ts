@@ -1,0 +1,346 @@
+import { createReadStream } from 'node:fs';
+import { mkdir, readdir, readFile, stat, unlink } from 'node:fs/promises';
+import { join } from 'node:path';
+import { createGunzip } from 'node:zlib';
+import type { Readable } from 'node:stream';
+import { resolveRuntime, safe } from './podman/client.js';
+import { peekTarFile, peekTarStream } from './tar-peek.js';
+import { writeAtomicJson } from './atomic-file.js';
+import { repoOfRef } from './signalk-image.js';
+import type { ArchiveInfo, ArchivesResponse } from './types.js';
+
+/**
+ * Local image files: `podman save` archives the operator drops into
+ * `~/.signalk-updater/images` on the host (= `/data/images` in here) so a
+ * boat with no internet can still load and switch to a new signalk-server
+ * image.
+ *
+ * Rules that keep this safe:
+ *  - The folder is FIXED (`LOCAL_IMAGES_DIR` env, default `/data/images`).
+ *    Every API takes a bare file NAME validated by {@link isValidArchiveName};
+ *    a path never crosses the wire, so there is nothing to traverse.
+ *  - Archives are PEEKED, never extracted: `manifest.json` (docker-archive)
+ *    or `index.json` (oci-archive) is read out of the tar via
+ *    src/tar-peek.ts. Plain tars are seeked (milliseconds); compressed
+ *    ones must be streamed once and the result is cached.
+ *  - Peek results live in `/data/archive-index.json`, keyed by file
+ *    size+mtime; a `podman load` also records the refs it printed, so a
+ *    compressed archive whose peek failed still becomes switchable.
+ */
+
+const DATA_DIR = (): string => process.env.DATA_DIR ?? '/data';
+export const localImagesDir = (): string =>
+  process.env.LOCAL_IMAGES_DIR ?? join(DATA_DIR(), 'images');
+const indexPath = (): string =>
+  process.env.ARCHIVE_INDEX_PATH ?? join(DATA_DIR(), 'archive-index.json');
+
+const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*\.(tar|tar\.gz|tgz)$/;
+
+export function isValidArchiveName(name: string): boolean {
+  return NAME_RE.test(name) && !name.includes('..') && name.length <= 255;
+}
+
+export function archiveFormat(name: string): 'tar' | 'tgz' {
+  return name.endsWith('.tar') ? 'tar' : 'tgz';
+}
+
+interface IndexEntry {
+  size: number;
+  mtimeMs: number;
+  refs: string[] | null;
+  imageId: string | null;
+}
+type ArchiveIndex = Record<string, IndexEntry>;
+
+async function readIndex(): Promise<ArchiveIndex> {
+  try {
+    const parsed: unknown = JSON.parse(await readFile(indexPath(), 'utf8'));
+    return typeof parsed === 'object' && parsed !== null ? (parsed as ArchiveIndex) : {};
+  } catch {
+    return {};
+  }
+}
+
+// ---------------------------------------------------------------- peeking
+
+interface DockerManifestEntry {
+  Config?: string;
+  RepoTags?: string[] | null;
+}
+interface OciIndex {
+  manifests?: Array<{ annotations?: Record<string, string> }>;
+}
+
+const WANTED = new Set(['manifest.json', 'index.json']);
+
+/** Interpret the peeked members. Exported for tests. */
+export function interpretManifests(found: Map<string, Buffer>): {
+  refs: string[] | null;
+  imageId: string | null;
+} {
+  const manifest = found.get('manifest.json');
+  if (manifest) {
+    try {
+      const arr = JSON.parse(manifest.toString('utf8')) as DockerManifestEntry[];
+      const first = Array.isArray(arr) ? arr[0] : undefined;
+      if (first) {
+        const refs = (first.RepoTags ?? []).filter((r) => typeof r === 'string' && r.includes(':'));
+        // Config is "<hex>.json" (docker) or "blobs/sha256/<hex>" (podman ≥4).
+        const cfg = first.Config ?? '';
+        const hex =
+          cfg
+            .replace(/\.json$/, '')
+            .split('/')
+            .pop() ?? '';
+        const imageId = /^[0-9a-f]{64}$/.test(hex) ? `sha256:${hex}` : null;
+        return { refs: refs.length > 0 ? refs : [], imageId };
+      }
+    } catch {
+      // fall through to OCI / unknown
+    }
+  }
+  const index = found.get('index.json');
+  if (index) {
+    try {
+      const idx = JSON.parse(index.toString('utf8')) as OciIndex;
+      const refs: string[] = [];
+      for (const m of idx.manifests ?? []) {
+        const ref =
+          m.annotations?.['org.opencontainers.image.ref.name'] ??
+          m.annotations?.['io.containers.image.ref.name'];
+        // podman writes the full `repo:tag`; a bare tag can't be switched to.
+        if (ref && ref.includes('/') && ref.includes(':')) refs.push(ref);
+      }
+      return { refs, imageId: null };
+    } catch {
+      // unknown
+    }
+  }
+  return { refs: null, imageId: null };
+}
+
+async function peekArchive(path: string, format: 'tar' | 'tgz'): Promise<Map<string, Buffer>> {
+  if (format === 'tar') return peekTarFile(path, WANTED);
+  const stream: Readable = createReadStream(path).pipe(createGunzip());
+  return peekTarStream(stream, WANTED);
+}
+
+// -------------------------------------------------------- local image set
+
+async function localImageSet(): Promise<{ tags: Set<string>; ids: Set<string> } | null> {
+  const rt = await resolveRuntime();
+  if (!rt) return null;
+  const r = await safe(() => rt.client.listImages({}));
+  if (!r.ok) return null;
+  const tags = new Set<string>();
+  const ids = new Set<string>();
+  for (const img of r.value as Array<{ Id: string; RepoTags?: string[] | null }>) {
+    ids.add(img.Id);
+    for (const t of img.RepoTags ?? []) tags.add(t);
+  }
+  return { tags, ids };
+}
+
+// ---------------------------------------------------------------- listing
+
+/**
+ * Enumerate the folder. Creates it on first call so the operator finds it
+ * ready. Peeks new/changed files, refreshes the index, and marks each
+ * archive `loaded` when podman already has its ref or image id.
+ */
+export async function listArchives(): Promise<ArchivesResponse> {
+  const dir = localImagesDir();
+  await mkdir(dir, { recursive: true });
+  const names = (await readdir(dir)).filter(isValidArchiveName).sort();
+  const index = await readIndex();
+  const next: ArchiveIndex = {};
+  let changed = false;
+
+  const stats = await Promise.all(
+    names.map(async (name) => {
+      try {
+        const st = await stat(join(dir, name));
+        return st.isFile() ? { name, st } : null;
+      } catch {
+        return null;
+      }
+    }),
+  );
+
+  const rows: Array<Omit<ArchiveInfo, 'loaded'>> = [];
+  for (const item of stats) {
+    if (!item) continue;
+    const { name, st } = item;
+    const format = archiveFormat(name);
+    const cached = index[name];
+    let entry: IndexEntry;
+    if (cached && cached.size === st.size && cached.mtimeMs === st.mtimeMs) {
+      entry = cached;
+    } else {
+      let peek = { refs: null as string[] | null, imageId: null as string | null };
+      try {
+        peek = interpretManifests(await peekArchive(join(dir, name), format));
+      } catch {
+        // unreadable / not a tar — keep it listed with unknown refs so the
+        // operator sees the file and gets an honest error on Load.
+      }
+      entry = { size: st.size, mtimeMs: st.mtimeMs, ...peek };
+      changed = true;
+    }
+    next[name] = entry;
+    rows.push({
+      name,
+      size: st.size,
+      mtime: new Date(st.mtimeMs).toISOString(),
+      format,
+      refs: entry.refs,
+      imageId: entry.imageId,
+    });
+  }
+  if (changed || Object.keys(index).length !== Object.keys(next).length) {
+    await writeAtomicJson(indexPath(), next).catch(() => undefined);
+  }
+
+  const local = await localImageSet();
+  const archives: ArchiveInfo[] = rows.map((r) => ({
+    ...r,
+    loaded:
+      local !== null &&
+      ((r.refs ?? []).some((ref) => local.tags.has(ref)) ||
+        (r.imageId !== null && local.ids.has(r.imageId))),
+  }));
+  return { dir, archives };
+}
+
+// ---------------------------------------------------------------- loading
+
+export interface LoadProgress {
+  bytesRead: number;
+  totalBytes: number;
+}
+
+/** Pull `Loaded image: <ref>` / `Loaded image ID: <id>` out of the daemon's
+ *  load output. Exported for tests. */
+export function parseLoadedRefs(text: string): { refs: string[]; imageId: string | null } {
+  const refs = new Set<string>();
+  let imageId: string | null = null;
+  for (const m of text.matchAll(/Loaded image(?: ID)?:\s*(\S+)/g)) {
+    const v = m[1] ?? '';
+    if (/^sha256:[0-9a-f]{64}$/.test(v)) imageId = v;
+    else if (v.includes(':')) refs.add(v);
+  }
+  return { refs: [...refs], imageId };
+}
+
+interface LoadEvent {
+  stream?: string;
+  status?: string;
+  error?: string;
+}
+
+/**
+ * `podman load` the archive through the socket. Streams the file (gunzipping
+ * a `.tar.gz`/`.tgz` ourselves), reports byte progress, parses the loaded
+ * refs and records them in the index so a compressed archive is switchable
+ * even if its peek failed.
+ */
+export async function loadArchive(
+  name: string,
+  onProgress?: (p: LoadProgress) => void,
+): Promise<{ ok: true; refs: string[]; imageId: string | null } | { ok: false; error: string }> {
+  if (!isValidArchiveName(name)) return { ok: false, error: 'invalid archive name' };
+  const path = join(localImagesDir(), name);
+  let st;
+  try {
+    st = await stat(path);
+  } catch {
+    return { ok: false, error: 'archive not found' };
+  }
+  const rt = await resolveRuntime();
+  if (!rt) return { ok: false, error: 'container runtime unreachable' };
+
+  let bytesRead = 0;
+  const file = createReadStream(path);
+  file.on('data', (chunk: Buffer | string) => {
+    bytesRead += typeof chunk === 'string' ? Buffer.byteLength(chunk) : chunk.length;
+    try {
+      onProgress?.({ bytesRead, totalBytes: st.size });
+    } catch {
+      // never let a progress listener break the load
+    }
+  });
+  const body: Readable = archiveFormat(name) === 'tgz' ? file.pipe(createGunzip()) : file;
+
+  const r = await safe(
+    () =>
+      new Promise<string>((resolve, reject) => {
+        rt.client.loadImage(body, { quiet: false }, (err, stream) => {
+          if (err) return reject(err);
+          if (!stream) return resolve('');
+          const lines: string[] = [];
+          rt.client.modem.followProgress(
+            stream,
+            (e) => (e ? reject(e) : resolve(lines.join('\n'))),
+            (ev: LoadEvent) => {
+              if (ev.error) lines.push(`error: ${ev.error}`);
+              if (ev.stream) lines.push(ev.stream);
+              if (ev.status) lines.push(ev.status);
+            },
+          );
+        });
+      }),
+  );
+  file.destroy();
+  if (!r.ok) return { ok: false, error: r.error.userMessage };
+  const parsed = parseLoadedRefs(r.value);
+  if (/^error:/m.test(r.value) && parsed.refs.length === 0) {
+    const line = r.value.split('\n').find((l) => l.startsWith('error:')) ?? 'error: load failed';
+    return { ok: false, error: line.slice('error:'.length).trim() };
+  }
+
+  // Record what the daemon told us (fills in refs for archives whose peek
+  // came up empty). Preserve a peeked imageId if load didn't report one.
+  const index = await readIndex();
+  const prev = index[name];
+  index[name] = {
+    size: st.size,
+    mtimeMs: st.mtimeMs,
+    refs: parsed.refs.length > 0 ? parsed.refs : (prev?.refs ?? null),
+    imageId: parsed.imageId ?? prev?.imageId ?? null,
+  };
+  await writeAtomicJson(indexPath(), index).catch(() => undefined);
+  return { ok: true, refs: index[name].refs ?? [], imageId: index[name].imageId };
+}
+
+// ------------------------------------------------------------- resolution
+
+/**
+ * The ref a Switch should target for this archive: prefer one under
+ * `preferredRepo` (the Advanced-tab repo), else the first. Null when the
+ * archive carries no `repo:tag` (saved by id) or was never peeked/loaded.
+ * Pure — the caller already has the listing.
+ */
+export function pickArchiveRef(
+  a: Pick<ArchiveInfo, 'refs'>,
+  preferredRepo: string,
+): { ref: string; tag: string } | null {
+  if (!a.refs || a.refs.length === 0) return null;
+  const ref = a.refs.find((r) => repoOfRef(r) === preferredRepo) ?? a.refs[0];
+  if (!ref) return null;
+  return { ref, tag: ref.slice(ref.lastIndexOf(':') + 1) };
+}
+
+export async function deleteArchive(name: string): Promise<boolean> {
+  if (!isValidArchiveName(name)) return false;
+  try {
+    await unlink(join(localImagesDir(), name));
+  } catch {
+    return false;
+  }
+  const index = await readIndex();
+  if (name in index) {
+    delete index[name];
+    await writeAtomicJson(indexPath(), index).catch(() => undefined);
+  }
+  return true;
+}
