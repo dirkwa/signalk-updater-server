@@ -61,11 +61,15 @@ COPY --from=build /app/dist          ./dist
 COPY --from=build /app/public        ./public
 COPY package.json                    ./
 
+# Ship the license terms inside the image: LICENSE.md requires that copies
+# of official releases carry these notices.
+COPY LICENSE.md LICENSE-Apache-2.0-through-v0.x.txt ./
+
 EXPOSE 3003
 
 LABEL org.opencontainers.image.source="https://github.com/dirkwa/signalk-updater-server" \
       org.opencontainers.image.description="SignalK updater engine container" \
-      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.licenses="LicenseRef-Source-Available-No-Redistribution" \
       io.signalk.role="updater" \
       io.signalk.persistent="true"
 
