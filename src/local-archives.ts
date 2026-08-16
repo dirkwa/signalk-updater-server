@@ -146,6 +146,27 @@ export function interpretManifests(found: Map<string, Buffer>): {
   return { refs: null, imageId: null };
 }
 
+// Concurrent listings (webapp refresh + update-checker tick) must not
+// decompress the same big .tar.gz twice; share the in-flight peek per
+// (path, size, mtime).
+const inflightPeeks = new Map<string, Promise<Map<string, Buffer>>>();
+
+function peekArchiveShared(
+  path: string,
+  format: 'tar' | 'tgz',
+  size: number,
+  mtimeMs: number,
+): Promise<Map<string, Buffer>> {
+  const key = `${path}|${size}|${mtimeMs}`;
+  const existing = inflightPeeks.get(key);
+  if (existing) return existing;
+  const p = peekArchive(path, format).finally(() => {
+    inflightPeeks.delete(key);
+  });
+  inflightPeeks.set(key, p);
+  return p;
+}
+
 async function peekArchive(path: string, format: 'tar' | 'tgz'): Promise<Map<string, Buffer>> {
   if (format === 'tar') return peekTarFile(path, WANTED);
   // The stream walker may bail out early (both manifests seen) or the
@@ -245,7 +266,9 @@ export async function listArchives(): Promise<ArchivesResponse> {
     } else {
       let peek = { refs: null as string[] | null, imageId: null as string | null };
       try {
-        peek = interpretManifests(await peekArchive(join(dir, name), format));
+        peek = interpretManifests(
+          await peekArchiveShared(join(dir, name), format, st.size, st.mtimeMs),
+        );
       } catch {
         // unreadable / not a tar — keep it listed with unknown refs so the
         // operator sees the file and gets an honest error on Load.

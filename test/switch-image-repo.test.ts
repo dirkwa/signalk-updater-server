@@ -77,8 +77,10 @@ vi.mock('../src/image-retention.js', () => ({
 }));
 vi.mock('../src/update-checker.js', () => ({ invalidate: vi.fn() }));
 const mockRecordImageSource = vi.fn();
+const mockRecordImageSourceForRef = vi.fn();
 vi.mock('../src/image-source.js', () => ({
   recordImageSource: (q: string, rec: unknown) => mockRecordImageSource(q, rec),
+  recordImageSourceForRef: (q: string, ref: string) => mockRecordImageSourceForRef(q, ref),
 }));
 vi.mock('../src/last-outcome.js', () => ({ recordOutcome: vi.fn() }));
 vi.mock('../src/signalk-url-resolver.js', () => ({
@@ -107,11 +109,13 @@ beforeEach(() => {
     mockPrune,
     mockInspectImage,
     mockRecordImageSource,
+    mockRecordImageSourceForRef,
   ]) {
     m.mockReset();
   }
   mockInspectImage.mockResolvedValue({ Id: 'sha256:local' });
   mockRecordImageSource.mockResolvedValue(undefined);
+  mockRecordImageSourceForRef.mockResolvedValue(undefined);
   delete process.env.SIGNALK_IMAGE;
   mockReadVersionSettings.mockResolvedValue({
     showBeta: false,
@@ -196,6 +200,13 @@ describe('performSwitch — image repo setting', () => {
     // the prune too — nothing in the fork repo is touched by this rollback.
     expect(mockPrune.mock.calls[0]?.[0]).toBe(DIRKWA);
     expect(mockPullImage).not.toHaveBeenCalledWith(`${FORK}:dirkwa-old`);
+    // Provenance for an internally supplied ref is looked up per ref, so an
+    // archive-sourced ref rolled back to stays archive-sourced.
+    expect(mockRecordImageSourceForRef).toHaveBeenCalledWith(
+      'signalk-server.container',
+      `${DIRKWA}:dirkwa-old`,
+    );
+    expect(mockRecordImageSource).not.toHaveBeenCalled();
   });
 
   it('falls back to the built-in repo when no setting is stored', async () => {

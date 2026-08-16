@@ -1,4 +1,4 @@
-import { mkdir, open, rename } from 'node:fs/promises';
+import { mkdir, open, rename, unlink } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
 /**
@@ -19,12 +19,18 @@ export async function writeAtomic(path: string, body: string, mode = 0o644): Pro
   const tmp = `${path}.${process.pid}.${++seq}.tmp`;
   const fh = await open(tmp, 'w', mode);
   try {
-    await fh.write(body);
-    await fh.sync();
-  } finally {
-    await fh.close();
+    try {
+      await fh.write(body);
+      await fh.sync();
+    } finally {
+      await fh.close();
+    }
+    await rename(tmp, path);
+  } catch (err) {
+    // Don't leave a half-written tmp behind on a failed write/rename.
+    await unlink(tmp).catch(() => undefined);
+    throw err;
   }
-  await rename(tmp, path);
   const dh = await open(dirname(path), 'r');
   try {
     await dh.sync();

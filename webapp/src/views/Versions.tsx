@@ -610,8 +610,8 @@ function LocalFilesCard({
         </Button>
       </CardHeader>
       <CardBody>
-        {error !== null && !data ? (
-          <Alert color="warning" className="mb-0">
+        {error !== null ? (
+          <Alert color="warning" className={data ? 'mb-3' : 'mb-0'}>
             Could not read the image folder ({error}).
           </Alert>
         ) : null}
@@ -620,7 +620,7 @@ function LocalFilesCard({
           <div className="text-muted small">
             No image files yet. On a machine with internet run{' '}
             <code>podman save ghcr.io/dirkwa/signalk-server:&lt;tag&gt; -o signalk-server.tar</code>{' '}
-            (optionally <code>| gzip</code>) and copy the file into{' '}
+            (or <code>podman save … | gzip &gt; signalk-server.tar.gz</code>) and copy the file into{' '}
             <code>~/.signalk-updater/images</code> on the boat.
           </div>
         ) : null}

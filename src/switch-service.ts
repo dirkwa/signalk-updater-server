@@ -23,7 +23,7 @@ import { resolveSignalkHealthUrl } from './signalk-url-resolver.js';
 import { recordOutcome } from './last-outcome.js';
 import type { SwitchResult } from './types.js';
 import { repoOfRef, resolveSignalkImage } from './signalk-image.js';
-import { recordImageSource } from './image-source.js';
+import { recordImageSource, recordImageSourceForRef } from './image-source.js';
 
 const SIGNALK_QUADLET = 'signalk-server.container';
 const SIGNALK_UNIT = 'signalk-server.service';
@@ -471,16 +471,20 @@ async function doSwitch(input: SwitchInput): Promise<SwitchResult> {
   // 7b. Record provenance for the source-aware update signal (best-effort;
   //     see src/image-source.ts). Archive switches remember the file so
   //     "update available" can mean "a newer file appeared".
-  await recordImageSource(
-    SIGNALK_QUADLET,
+  await (
     input.source
-      ? {
+      ? recordImageSource(SIGNALK_QUADLET, {
           ref: newImage,
           source: 'archive',
           archive: input.source.name,
           archiveMtimeMs: input.source.mtimeMs,
-        }
-      : { ref: newImage, source: 'registry' },
+        })
+      : input.image
+        ? // Ref supplied by an internal caller (rollback): its origin is
+          // whatever we remembered for that ref — an archive-sourced ref
+          // stays archive-sourced.
+          recordImageSourceForRef(SIGNALK_QUADLET, newImage)
+        : recordImageSource(SIGNALK_QUADLET, { ref: newImage, source: 'registry' })
   ).catch(() => undefined);
 
   // 8. Kick the doctor's drift scan. The new image has its own pinned

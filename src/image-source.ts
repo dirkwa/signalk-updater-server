@@ -32,16 +32,85 @@ export interface ImageSourceRecord {
 
 type ImageSourceFile = Record<string, ImageSourceRecord>;
 
+/** Provenance remembered per REF (bounded), so a rollback to a ref that was
+ *  originally switched to from an archive keeps its archive provenance
+ *  instead of silently becoming 'registry'. Stored under a reserved key
+ *  in the same file. */
+type HistoryEntry = Pick<ImageSourceRecord, 'source' | 'archive' | 'archiveMtimeMs'>;
+const HISTORY_KEY = '__history';
+const HISTORY_MAX = 20;
+
 const filePath = (): string =>
   process.env.IMAGE_SOURCE_PATH ?? join(process.env.DATA_DIR ?? '/data', 'image-source.json');
 
-async function readAll(): Promise<ImageSourceFile> {
+function sanitizeRecord(v: unknown): ImageSourceRecord | null {
+  if (typeof v !== 'object' || v === null) return null;
+  const r = v as Record<string, unknown>;
+  if (typeof r.ref !== 'string' || (r.source !== 'registry' && r.source !== 'archive')) return null;
+  const rec: ImageSourceRecord = {
+    ref: r.ref,
+    source: r.source,
+    at: typeof r.at === 'string' ? r.at : '',
+  };
+  if (r.source === 'archive') {
+    if (typeof r.archive !== 'string') return null;
+    rec.archive = r.archive;
+    if (typeof r.archiveMtimeMs === 'number' && Number.isFinite(r.archiveMtimeMs)) {
+      rec.archiveMtimeMs = r.archiveMtimeMs;
+    }
+  }
+  return rec;
+}
+
+interface Parsed {
+  records: ImageSourceFile;
+  history: Record<string, HistoryEntry>;
+}
+
+async function readParsed(): Promise<Parsed> {
+  const out: Parsed = { records: {}, history: {} };
   try {
     const parsed: unknown = JSON.parse(await readFile(filePath(), 'utf8'));
-    return typeof parsed === 'object' && parsed !== null ? (parsed as ImageSourceFile) : {};
+    if (typeof parsed !== 'object' || parsed === null) return out;
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (k === HISTORY_KEY) {
+        if (typeof v === 'object' && v !== null) {
+          for (const [ref, h] of Object.entries(v as Record<string, unknown>)) {
+            // Reuse the record validator: history entries are records minus ref/at.
+            const rec = sanitizeRecord({ ...(h as object), ref, at: '' });
+            if (rec) {
+              out.history[ref] = {
+                source: rec.source,
+                ...(rec.archive !== undefined ? { archive: rec.archive } : {}),
+                ...(rec.archiveMtimeMs !== undefined ? { archiveMtimeMs: rec.archiveMtimeMs } : {}),
+              };
+            }
+          }
+        }
+        continue;
+      }
+      const rec = sanitizeRecord(v);
+      if (rec) out.records[k] = rec;
+    }
   } catch {
-    return {};
+    // missing / corrupt → empty
   }
+  return out;
+}
+
+async function readAll(): Promise<ImageSourceFile> {
+  return (await readParsed()).records;
+}
+
+async function writeParsed(p: Parsed): Promise<void> {
+  // Trim history to the most recent entries (insertion order).
+  const refs = Object.keys(p.history);
+  const trimmed: Record<string, HistoryEntry> = {};
+  for (const ref of refs.slice(Math.max(0, refs.length - HISTORY_MAX))) {
+    const h = p.history[ref];
+    if (h) trimmed[ref] = h;
+  }
+  await writeAtomicJson(filePath(), { ...p.records, [HISTORY_KEY]: trimmed });
 }
 
 /** Record where `quadletName`'s new image came from. Best-effort: a write
@@ -50,9 +119,36 @@ export async function recordImageSource(
   quadletName: string,
   rec: Omit<ImageSourceRecord, 'at'>,
 ): Promise<void> {
-  const all = await readAll();
-  all[quadletName] = { ...rec, at: new Date().toISOString() };
-  await writeAtomicJson(filePath(), all);
+  const p = await readParsed();
+  p.records[quadletName] = { ...rec, at: new Date().toISOString() };
+  // Re-insert so the ref becomes the most recent history entry.
+  delete p.history[rec.ref];
+  p.history[rec.ref] = {
+    source: rec.source,
+    ...(rec.archive !== undefined ? { archive: rec.archive } : {}),
+    ...(rec.archiveMtimeMs !== undefined ? { archiveMtimeMs: rec.archiveMtimeMs } : {}),
+  };
+  await writeParsed(p);
+}
+
+/**
+ * Record provenance for a ref whose origin the caller doesn't know (a
+ * rollback re-applies a last-good ref): reuse what we remembered for that
+ * ref, else 'registry'.
+ */
+export async function recordImageSourceForRef(quadletName: string, ref: string): Promise<void> {
+  const p = await readParsed();
+  const h = p.history[ref];
+  const rec: Omit<ImageSourceRecord, 'at'> =
+    h && h.source === 'archive' && h.archive
+      ? {
+          ref,
+          source: 'archive',
+          archive: h.archive,
+          ...(h.archiveMtimeMs !== undefined ? { archiveMtimeMs: h.archiveMtimeMs } : {}),
+        }
+      : { ref, source: 'registry' };
+  await recordImageSource(quadletName, rec);
 }
 
 export interface ResolvedImageSource {

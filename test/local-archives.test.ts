@@ -375,11 +375,18 @@ describe('listArchives / loadArchive / deleteArchive', () => {
     listImagesPayload = [{ Id: `sha256:${CFG_HEX}`, RepoTags: ['ghcr.io/x/y:1.0.0'] }];
     expect((await listArchives()).archives[0]?.loaded).toBe(true);
 
-    // Second listing hits the index — no re-peek even if the file changed
-    // content but kept size+mtime (we assert via the cache file itself).
-    const { readFile } = await import('node:fs/promises');
-    const idx = JSON.parse(await readFile(process.env.ARCHIVE_INDEX_PATH as string, 'utf8'));
-    expect(idx['a.tar'].refs).toEqual(['ghcr.io/x/y:1.0.0']);
+    // Second listing hits the index: same size + same mtime → no re-peek,
+    // even though the content now says a different tag (same length). Pin
+    // a whole-second mtime first so it can be reproduced exactly.
+    const { statSync } = await import('node:fs');
+    const pinned = new Date('2026-08-01T00:00:00Z');
+    utimesSync(join(images, 'a.tar'), pinned, pinned);
+    expect((await listArchives()).archives[0]?.refs).toEqual(['ghcr.io/x/y:1.0.0']);
+    const before = statSync(join(images, 'a.tar'));
+    writeFileSync(join(images, 'a.tar'), dockerArchive(['ghcr.io/x/y:1.0.1']));
+    utimesSync(join(images, 'a.tar'), pinned, pinned);
+    expect(statSync(join(images, 'a.tar')).size).toBe(before.size);
+    expect((await listArchives()).archives[0]?.refs).toEqual(['ghcr.io/x/y:1.0.0']);
 
     // Touch mtime → re-peek picks up new content.
     writeFileSync(join(images, 'a.tar'), dockerArchive(['ghcr.io/x/y:9.9.9']));

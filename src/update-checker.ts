@@ -126,7 +126,12 @@ async function checkSignalk(target: VersionTarget): Promise<UpdateInfo> {
     }),
   ]);
   if (src.source === 'archive') {
-    const newer = await newerArchivesThan(src.archiveMtimeMs ?? 0);
+    // Without a usable mtime for the file in use we cannot say what is
+    // "newer" — report nothing rather than flag every file.
+    const newer =
+      typeof src.archiveMtimeMs === 'number' && Number.isFinite(src.archiveMtimeMs)
+        ? await newerArchivesThan(src.archiveMtimeMs)
+        : [];
     const newest = newer[0];
     return {
       currentTag: identity.version ?? 'unknown',

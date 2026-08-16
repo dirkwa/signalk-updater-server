@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, utimesSync, writeFileSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -111,6 +111,50 @@ describe('resolveImageSource', () => {
   });
 });
 
+describe('resolveImageSource — history', () => {
+  it('a rollback ref remembered as archive-sourced stays archive-sourced', async () => {
+    const { recordImageSourceForRef } = await import('../src/image-source.js');
+    writeQuadlet('ghcr.io/dirkwa/signalk-server:2.24.0');
+    await recordImageSource(Q, {
+      ref: 'ghcr.io/dirkwa/signalk-server:2.24.0',
+      source: 'archive',
+      archive: 'a.tar',
+      archiveMtimeMs: 1000,
+    });
+    // Later a registry switch to 2.25.0…
+    await recordImageSource(Q, { ref: 'ghcr.io/dirkwa/signalk-server:2.25.0', source: 'registry' });
+    // …then a rollback re-applies 2.24.0 without knowing where it came from.
+    await recordImageSourceForRef(Q, 'ghcr.io/dirkwa/signalk-server:2.24.0');
+    expect(await resolveImageSource(Q)).toEqual({
+      source: 'archive',
+      archive: 'a.tar',
+      archiveMtimeMs: 1000,
+    });
+    // An unknown ref falls back to registry.
+    writeQuadlet('ghcr.io/dirkwa/signalk-server:1.0.0');
+    await recordImageSourceForRef(Q, 'ghcr.io/dirkwa/signalk-server:1.0.0');
+    expect(await resolveImageSource(Q)).toEqual({ source: 'registry' });
+  });
+
+  it('archive record without a usable mtime yields no update signal', async () => {
+    writeQuadlet('ghcr.io/dirkwa/signalk-server:2.24.0');
+    writeFileSync(join(images, 'some.tar'), 'x');
+    writeFileSync(
+      process.env.IMAGE_SOURCE_PATH as string,
+      JSON.stringify({
+        [Q]: {
+          ref: 'ghcr.io/dirkwa/signalk-server:2.24.0',
+          source: 'archive',
+          archive: 'gone.tar',
+        },
+      }),
+    );
+    const r = await triggerCheck();
+    expect(r.signalkServer).toMatchObject({ source: 'archive', updateAvailable: false });
+    expect(r.signalkServer.availableArchive).toBeUndefined();
+  });
+});
+
 describe('triggerCheck — signalk-server source awareness', () => {
   it('custom repo: asks GHCR about the fork repo from the Quadlet, not dirkwa', async () => {
     writeQuadlet('ghcr.io/fork/signalk-server:dirkwa');
@@ -124,12 +168,14 @@ describe('triggerCheck — signalk-server source awareness', () => {
 
   it('archive-sourced: never asks GHCR; flags only a newer file in the folder', async () => {
     writeQuadlet('ghcr.io/dirkwa/signalk-server:2.24.0');
+    const T0 = Date.parse('2026-08-01T00:00:00Z');
     writeFileSync(join(images, 'current.tar'), 'x');
+    utimesSync(join(images, 'current.tar'), new Date(T0), new Date(T0));
     await recordImageSource(Q, {
       ref: 'ghcr.io/dirkwa/signalk-server:2.24.0',
       source: 'archive',
       archive: 'current.tar',
-      archiveMtimeMs: Date.now(),
+      archiveMtimeMs: T0,
     });
 
     // The updater/doctor engines still do their own GHCR HEADs; the
@@ -142,8 +188,8 @@ describe('triggerCheck — signalk-server source awareness', () => {
     expect(r.signalkServer.availableArchive).toBeUndefined();
 
     // A newer file appears → update available, named; still no GHCR.
-    await new Promise((res) => setTimeout(res, 20));
     writeFileSync(join(images, 'newer.tar'), 'y');
+    utimesSync(join(images, 'newer.tar'), new Date(T0 + 60_000), new Date(T0 + 60_000));
     r = await triggerCheck();
     expect(signalkAsked()).toBe(false);
     expect(r.signalkServer).toMatchObject({
@@ -154,8 +200,8 @@ describe('triggerCheck — signalk-server source awareness', () => {
 
     // The same file name re-copied with newer content counts as new too
     // (mtime-based, not name-based).
-    await new Promise((res) => setTimeout(res, 20));
     writeFileSync(join(images, 'current.tar'), 'x-rebuilt');
+    utimesSync(join(images, 'current.tar'), new Date(T0 + 120_000), new Date(T0 + 120_000));
     r = await triggerCheck();
     expect(r.signalkServer.updateAvailable).toBe(true);
     expect(r.signalkServer.availableArchive).toBe('current.tar');
