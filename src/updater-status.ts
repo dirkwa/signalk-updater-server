@@ -5,7 +5,7 @@
 // its signals live across the update cache, container state, the operation
 // lock, and the last-operation-outcome cache — so we fold them here.
 
-import type { AvailableUpdates, CurrentState, ImageState, LockInfo } from './types.js';
+import type { AvailableUpdates, CurrentState, ImageState, LockInfo, UpdateInfo } from './types.js';
 import type { OperationOutcome } from './last-outcome.js';
 
 export type StatusLevel = 'ok' | 'warn' | 'fail' | 'unknown';
@@ -50,16 +50,7 @@ function imageStateMessage(s: ImageState): string {
 // warn; the semver case carries the target tag, the imageState case explains
 // the drift. dirkwa/master users only ever hit the imageState branch (their
 // updateAvailable is always false — no semver stream).
-function updateResult(
-  id: string,
-  label: string,
-  info: {
-    updateAvailable: boolean;
-    availableTag?: string;
-    imageState?: ImageState;
-    availableArchive?: string;
-  },
-): StatusResult {
+function updateResult(id: string, label: string, info: UpdateInfo): StatusResult {
   // Archive-sourced install (switched to from a local image file): the only
   // "update" that exists for it is a NEWER FILE in the folder — GHCR is not
   // consulted, so nothing else can raise a warn here. See src/image-source.ts.

@@ -80,6 +80,18 @@ function sanitizeIndex(parsed: unknown): ArchiveIndex {
   return out;
 }
 
+// Serialise every read-modify-write of the index file within this
+// process: listArchives (webapp + update-checker), loadArchive and
+// deleteArchive can otherwise interleave and one writer clobber another's
+// update. Simple promise chain — no cross-process locking needed (single
+// engine process owns /data).
+let indexQueue: Promise<unknown> = Promise.resolve();
+function withIndexLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = indexQueue.then(fn, fn);
+  indexQueue = run.catch(() => undefined);
+  return run;
+}
+
 async function readIndex(): Promise<ArchiveIndex> {
   try {
     return sanitizeIndex(JSON.parse(await readFile(indexPath(), 'utf8')));
@@ -287,7 +299,19 @@ export async function listArchives(): Promise<ArchivesResponse> {
     });
   }
   if (changed || Object.keys(index).length !== Object.keys(next).length) {
-    await writeAtomicJson(indexPath(), next).catch(() => undefined);
+    // Merge under the lock against a FRESH read: a load that finished while
+    // we were peeking may have enriched an entry (refs for a gz whose peek
+    // came up empty) — an entry for the same file (size+mtime) already on
+    // disk wins over what we computed.
+    await withIndexLock(async () => {
+      const cur = await readIndex();
+      const merged: ArchiveIndex = {};
+      for (const [n, e] of Object.entries(next)) {
+        const c = cur[n];
+        merged[n] = c && c.size === e.size && c.mtimeMs === e.mtimeMs ? c : e;
+      }
+      await writeAtomicJson(indexPath(), merged);
+    }).catch(() => undefined);
   }
 
   const local = await localImageSet();
@@ -392,16 +416,20 @@ export async function loadArchive(
 
   // Record what the daemon told us (fills in refs for archives whose peek
   // came up empty). Preserve a peeked imageId if load didn't report one.
-  const index = await readIndex();
-  const prev = index[name];
-  index[name] = {
-    size: st.size,
-    mtimeMs: st.mtimeMs,
-    refs: parsed.refs.length > 0 ? parsed.refs : (prev?.refs ?? null),
-    imageId: parsed.imageId ?? prev?.imageId ?? null,
-  };
-  await writeAtomicJson(indexPath(), index).catch(() => undefined);
-  return { ok: true, refs: index[name].refs ?? [], imageId: index[name].imageId };
+  const entry = await withIndexLock(async () => {
+    const index = await readIndex();
+    const prev = index[name];
+    const e: IndexEntry = {
+      size: st.size,
+      mtimeMs: st.mtimeMs,
+      refs: parsed.refs.length > 0 ? parsed.refs : (prev?.refs ?? null),
+      imageId: parsed.imageId ?? prev?.imageId ?? null,
+    };
+    index[name] = e;
+    await writeAtomicJson(indexPath(), index).catch(() => undefined);
+    return e;
+  });
+  return { ok: true, refs: entry.refs ?? [], imageId: entry.imageId };
 }
 
 // ------------------------------------------------------------- resolution
@@ -429,10 +457,12 @@ export async function deleteArchive(name: string): Promise<boolean> {
   } catch {
     return false;
   }
-  const index = await readIndex();
-  if (name in index) {
-    delete index[name];
-    await writeAtomicJson(indexPath(), index).catch(() => undefined);
-  }
+  await withIndexLock(async () => {
+    const index = await readIndex();
+    if (name in index) {
+      delete index[name];
+      await writeAtomicJson(indexPath(), index);
+    }
+  }).catch(() => undefined);
   return true;
 }

@@ -55,7 +55,9 @@ Boats are often offline. Instead of pulling from GHCR, you can bring an image as
 
 2. Copy the file (scp, SFTP, file manager, USB stick) into **`~/.signalk-updater/images`** on the
    boat (that is `/data/images` inside the engine container; the folder is created on first use).
-   `.tar`, `.tar.gz` and `.tgz` are recognised, docker- and OCI-archive alike.
+   `.tar`, `.tar.gz` and `.tgz` are recognised, docker- and OCI-archive alike. File names must be
+   plain (`letters, digits, . _ -`, no spaces or slashes, e.g. `signalk-server-2.24.0.tar.gz`);
+   anything else in the folder is ignored.
 
 3. In the Updater Console, open **Versions → Local image files**. The file shows up with the
    `repo:tag` it carries (read straight from the archive's manifest, no unpacking). **Load** imports

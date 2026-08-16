@@ -530,6 +530,112 @@ describe('Versions', () => {
       });
     });
 
+    it('clears the Load spinner and toasts on the SSE terminal event (complete and failed)', async () => {
+      mockFetch({
+        '/api/versions': sampleVersions,
+        '/api/state': sampleState,
+        '/api/versions/settings': defaultSettings,
+        '/api/updates/available': noUpdates,
+        '/api/versions/archives': sampleArchives,
+        '/api/versions/archives/load': {
+          ok: true,
+          accepted: true,
+          name: 'signalk-server-2.25.0.tar',
+        },
+      });
+      renderVersions();
+      const row = (await screen.findByText('signalk-server-2.25.0.tar')).closest('tr');
+      const loadBtn = within(row as HTMLElement)
+        .getAllByRole('button')
+        .find((b) => b.textContent?.trim() === 'Load') as HTMLElement;
+      fireEvent.click(loadBtn);
+      // While in flight every archive action is disabled.
+      await waitFor(() => {
+        expect(loadBtn).toBeDisabled();
+      });
+      const es = StubEventSource.instances.at(-1);
+      if (!es) throw new Error('expected an EventSource to be opened');
+      act(() => {
+        es.emit({
+          stage: 'complete',
+          target: 'signalk-server',
+          to: 'signalk-server-2.25.0.tar',
+          message: 'Loaded ghcr.io/dirkwa/signalk-server:2.25.0',
+          at: new Date().toISOString(),
+        });
+      });
+      // Toast + progress card both carry the message.
+      expect(
+        (await screen.findAllByText('Loaded ghcr.io/dirkwa/signalk-server:2.25.0')).length,
+      ).toBeGreaterThan(0);
+      await waitFor(() => {
+        const btn = within(
+          screen.getByText('signalk-server-2.25.0.tar').closest('tr') as HTMLElement,
+        )
+          .getAllByRole('button')
+          .find((b) => /^(Load|Reload)$/.test(b.textContent?.trim() ?? ''));
+        expect(btn).toBeEnabled();
+      });
+
+      // Second load that fails: the failure toast names the error.
+      fireEvent.click(
+        within(screen.getByText('signalk-server-2.25.0.tar').closest('tr') as HTMLElement)
+          .getAllByRole('button')
+          .find((b) => /^(Load|Reload)$/.test(b.textContent?.trim() ?? '')) as HTMLElement,
+      );
+      await waitFor(() => {
+        expect(fetchCalls.filter((c) => c.path === '/api/versions/archives/load').length).toBe(2);
+      });
+      act(() => {
+        es.emit({
+          stage: 'failed',
+          target: 'signalk-server',
+          to: 'signalk-server-2.25.0.tar',
+          error: 'load failed: no space left on device',
+          at: new Date().toISOString(),
+        });
+      });
+      expect(
+        (await screen.findAllByText(/Load failed: load failed: no space left/)).length,
+      ).toBeGreaterThan(0);
+    });
+
+    it('Delete asks for confirmation, then DELETEs the encoded name and refreshes', async () => {
+      mockFetch({
+        '/api/versions': sampleVersions,
+        '/api/state': sampleState,
+        '/api/versions/settings': defaultSettings,
+        '/api/updates/available': noUpdates,
+        '/api/versions/archives': sampleArchives,
+        '/api/versions/archives/signalk-server-2.25.0.tar': new Response(null, { status: 204 }),
+      });
+      renderVersions();
+      const row = (await screen.findByText('signalk-server-2.25.0.tar')).closest('tr');
+      const del = within(row as HTMLElement)
+        .getAllByRole('button')
+        .find((b) => b.textContent?.trim() === 'Delete') as HTMLElement;
+      fireEvent.click(del);
+      // Confirm modal: title names the file; the OK button says Delete.
+      expect(await screen.findByText('Delete signalk-server-2.25.0.tar?')).toBeInTheDocument();
+      // The other row has a Delete button too — pick the modal's.
+      const dialog = await screen.findByRole('dialog');
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
+      await waitFor(() => {
+        expect(
+          fetchCalls.some(
+            (c) =>
+              c.method === 'DELETE' &&
+              c.path === '/api/versions/archives/signalk-server-2.25.0.tar',
+          ),
+        ).toBe(true);
+      });
+      expect(await screen.findByText('Deleted signalk-server-2.25.0.tar')).toBeInTheDocument();
+      // The listing was re-fetched after the delete.
+      expect(fetchCalls.filter((c) => c.path === '/api/versions/archives').length).toBeGreaterThan(
+        1,
+      );
+    });
+
     it('marks the archive whose ref is the running image as current', async () => {
       const state: CurrentState = {
         ...sampleState,

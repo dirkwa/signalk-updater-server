@@ -20,7 +20,9 @@ export async function writeAtomic(path: string, body: string, mode = 0o644): Pro
   const fh = await open(tmp, 'w', mode);
   try {
     try {
-      await fh.write(body);
+      // writeFile loops until the whole payload is written; a bare write()
+      // may report fewer bytes than given.
+      await fh.writeFile(body);
       await fh.sync();
     } finally {
       await fh.close();

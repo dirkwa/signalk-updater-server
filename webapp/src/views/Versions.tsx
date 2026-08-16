@@ -94,6 +94,7 @@ const ACTIVE_STAGES: ReadonlySet<SwitchProgressEvent['stage']> = new Set([
 ]);
 
 const MAX_VISIBLE_PER_CHANNEL = 25;
+const LOAD_SAFETY_MS = 15 * 60 * 1000;
 
 function shortDigest(digest: string): string {
   const hex = digest.includes(':') ? digest.slice(digest.indexOf(':') + 1) : digest;
@@ -196,6 +197,21 @@ export function Versions() {
   archivesRef.current = archives;
   // Same for an archive load kicked off from this tab.
   const loadingNameRef = useRef<string | null>(null);
+  // Bounded recovery when the SSE terminal event for a load never arrives
+  // (stream dropped, tab suspended, engine restarted mid-load): armed on
+  // Load, disarmed by the terminal event. Without it the card stays busy
+  // until a page reload AND the stale ref would swallow the NEXT terminal
+  // event (a later switch would toast "Loaded …"). Same pattern as the
+  // Dashboard's doctor-update safety timer. 15 min covers a multi-GB load
+  // from a slow SD card with slack.
+  const loadSafetyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const disarmLoadSafety = useCallback((): void => {
+    if (loadSafetyTimer.current !== null) {
+      clearTimeout(loadSafetyTimer.current);
+      loadSafetyTimer.current = null;
+    }
+  }, []);
+  useEffect(() => () => disarmLoadSafety(), [disarmLoadSafety]);
   // True when a switch was kicked off from THIS tab, so the SSE handler
   // toasts its terminal outcome (the 202 response no longer carries it).
   const switchInitiatedRef = useRef(false);
@@ -234,6 +250,10 @@ export function Versions() {
             const name = loadingNameRef.current;
             loadingNameRef.current = null;
             setLoadingName(null);
+            if (loadSafetyTimer.current !== null) {
+              clearTimeout(loadSafetyTimer.current);
+              loadSafetyTimer.current = null;
+            }
             if (parsed.stage === 'complete') {
               toastRef.current.show(parsed.message ?? `Loaded ${name}`, 'ok');
             } else {
@@ -374,10 +394,25 @@ export function Versions() {
     async (name: string): Promise<void> => {
       setLoadingName(name);
       loadingNameRef.current = name;
+      disarmLoadSafety();
+      loadSafetyTimer.current = setTimeout(() => {
+        loadSafetyTimer.current = null;
+        if (loadingNameRef.current === name) {
+          loadingNameRef.current = null;
+          setLoadingName(null);
+          toastRef.current.show(
+            `No completion reported for ${name} — refresh to see whether it loaded.`,
+            'err',
+            8000,
+          );
+          void archivesRef.current.refresh();
+        }
+      }, LOAD_SAFETY_MS);
       try {
         // 202 + SSE, same as pre-pull: outcome arrives on the stream.
         await api('/api/versions/archives/load', { method: 'POST', body: { name } });
       } catch (err) {
+        disarmLoadSafety();
         loadingNameRef.current = null;
         setLoadingName(null);
         toast.show(
@@ -387,7 +422,7 @@ export function Versions() {
         );
       }
     },
-    [toast],
+    [disarmLoadSafety, toast],
   );
 
   const doSwitchArchive = useCallback(
