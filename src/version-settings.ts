@@ -8,6 +8,7 @@ const SETTINGS_PATH = process.env.VERSION_SETTINGS_PATH ?? join(DATA_DIR, 'versi
 export const DEFAULT_VERSION_SETTINGS: VersionSettings = {
   showBeta: false,
   showMaster: false,
+  imageRepo: null,
 };
 
 async function fsyncDir(dir: string): Promise<void> {

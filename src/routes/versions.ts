@@ -1,14 +1,13 @@
 import type { FastifyInstance } from 'fastify';
 import { listTags } from '../ghcr.js';
-import type { AnnotatedTag, Channel, VersionSettings } from '../types.js';
+import type { AnnotatedTag, Channel, VersionSettings, VersionSettingsResponse } from '../types.js';
 import { requireToken } from '../auth.js';
 import { listLocalImagesFor } from '../local-images.js';
 import { readVersionSettings, writeVersionSettings } from '../version-settings.js';
 import { pullImage } from '../container-ops.js';
 import { withMutex, MutexBusyError } from '../mutex.js';
 import { publishSwitchEvent } from '../switch-progress-broker.js';
-
-const TARGET_IMAGE = process.env.SIGNALK_IMAGE ?? 'dirkwa/signalk-server';
+import { ghcrPath, normalizeImageRepo, resolveSignalkImage } from '../signalk-image.js';
 
 function groupByChannel(tags: AnnotatedTag[]): Record<Channel, AnnotatedTag[]> {
   const out: Record<Channel, AnnotatedTag[]> = { stable: [], beta: [], master: [], dirkwa: [] };
@@ -25,7 +24,9 @@ async function buildVersionsResponse(
   | { ok: true; cachedAt: string; channels: Record<Channel, AnnotatedTag[]> }
   | { ok: false; status: number; body: { error: string; kind: string } }
 > {
-  const r = await listTags(TARGET_IMAGE, { force });
+  // Resolved per request so an Advanced-tab repo change is live at once.
+  const { image } = await resolveSignalkImage();
+  const r = await listTags(ghcrPath(image), { force });
   if (!r.ok) {
     // Map the failure kind to an honest status. Transient
     // connectivity/registry blips (common on boat LTE links) become 503
@@ -38,7 +39,7 @@ async function buildVersionsResponse(
       r.error.kind === 'network' || r.error.kind === 'registry-unavailable' ? 503 : 502;
     return { ok: false, status, body: { error: r.error.userMessage, kind: r.error.kind } };
   }
-  const local = await listLocalImagesFor([TARGET_IMAGE]);
+  const local = await listLocalImagesFor([ghcrPath(image)]);
   const localTags = new Set(local.images.map((i) => i.tag));
   const annotated: AnnotatedTag[] = r.tags.map((t) => ({ ...t, isLocal: localTags.has(t.name) }));
   return { ok: true, cachedAt: r.cachedAt, channels: groupByChannel(annotated) };
@@ -132,7 +133,8 @@ export async function registerVersionRoutes(app: FastifyInstance): Promise<void>
   });
 
   app.get('/api/versions/local', async () => {
-    return listLocalImagesFor([TARGET_IMAGE]);
+    const { image } = await resolveSignalkImage();
+    return listLocalImagesFor([ghcrPath(image)]);
   });
 
   // Pre-pull an image without switching to it. Lets an operator stage an
@@ -156,8 +158,8 @@ export async function registerVersionRoutes(app: FastifyInstance): Promise<void>
         reply.code(400);
         return { error: 'tag is required' };
       }
-      const repo = TARGET_IMAGE.includes('/') ? TARGET_IMAGE : `dirkwa/${TARGET_IMAGE}`;
-      const fullRef = repo.startsWith('ghcr.io/') ? `${repo}:${tag}` : `ghcr.io/${repo}:${tag}`;
+      const { image } = await resolveSignalkImage();
+      const fullRef = `${image}:${tag}`;
 
       // Fire-and-forget: the background task owns all progress/terminal
       // events. Errors (incl. mutex-busy) are reported via SSE, never as an
@@ -169,20 +171,47 @@ export async function registerVersionRoutes(app: FastifyInstance): Promise<void>
     },
   );
 
-  app.get('/api/versions/settings', async (): Promise<VersionSettings> => {
-    return readVersionSettings();
+  app.get('/api/versions/settings', async (): Promise<VersionSettingsResponse> => {
+    return withEffective(await readVersionSettings());
   });
 
   app.put<{ Body: Partial<VersionSettings> }>(
     '/api/versions/settings',
     { preHandler: requireToken },
-    async (req): Promise<VersionSettings> => {
+    async (req, reply): Promise<VersionSettingsResponse | { error: string }> => {
       // Whitelist the known keys so a misbehaving client can't pollute
       // the settings file with arbitrary fields.
       const patch: Partial<VersionSettings> = {};
       if (typeof req.body?.showBeta === 'boolean') patch.showBeta = req.body.showBeta;
       if (typeof req.body?.showMaster === 'boolean') patch.showMaster = req.body.showMaster;
-      return writeVersionSettings(patch);
+      if (req.body && 'imageRepo' in req.body) {
+        const raw = req.body.imageRepo;
+        if (raw === null || raw === '') {
+          patch.imageRepo = null;
+        } else if (typeof raw === 'string') {
+          const n = normalizeImageRepo(raw);
+          if (!n.ok) {
+            reply.code(400);
+            return { error: n.error };
+          }
+          patch.imageRepo = n.value;
+        }
+        // Any other type is ignored, same as the boolean keys.
+      }
+      return withEffective(await writeVersionSettings(patch));
     },
   );
+}
+
+/** Attach the resolved signalk-server repo to the persisted settings so
+ *  the webapp can show "currently using X" and offer a reset. Both GET and
+ *  PUT return this shape, so a save needn't be followed by a refetch. */
+async function withEffective(settings: VersionSettings): Promise<VersionSettingsResponse> {
+  const r = await resolveSignalkImage();
+  return {
+    ...settings,
+    effectiveImageRepo: r.image,
+    imageRepoSource: r.source,
+    defaultImageRepo: r.defaultImage,
+  };
 }

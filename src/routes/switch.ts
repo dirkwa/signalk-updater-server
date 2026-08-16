@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { performSwitch } from '../switch-service.js';
+import { performSwitch, type SwitchInput } from '../switch-service.js';
 import { readLastGood } from '../quadlet/rewriter.js';
 import { requireToken } from '../auth.js';
 import { MutexBusyError } from '../mutex.js';
@@ -30,7 +30,7 @@ interface MinimalLogger {
  * webapp, which drives the result off SSE, learns about it. Invoked
  * fire-and-forget from the 202 routes; never throws.
  */
-async function runBackgroundSwitch(body: SwitchBody, log: MinimalLogger): Promise<void> {
+async function runBackgroundSwitch(body: SwitchInput, log: MinimalLogger): Promise<void> {
   try {
     const result = await performSwitch(body);
     log.info({ to: body.tag, ok: result.ok, rolledBack: result.rolledBack }, 'switch finished');
@@ -73,7 +73,18 @@ export async function registerSwitchRoutes(app: FastifyInstance): Promise<void> 
       // blocking response would sit headerless for minutes and get killed
       // by the embedded plugin proxy's 15s header-timeout → 502 mid-switch.
       // Same fix shape as the pre-pull and doctor-update flows.
-      void runBackgroundSwitch(body, app.log);
+      // Forward only the public fields — never a client-supplied `image`
+      // (that override is reserved for the rollback path below).
+      void runBackgroundSwitch(
+        {
+          tag: body.tag,
+          ...(typeof body.skipBackup === 'boolean' ? { skipBackup: body.skipBackup } : {}),
+          ...(typeof body.healthTimeoutMs === 'number'
+            ? { healthTimeoutMs: body.healthTimeoutMs }
+            : {}),
+        },
+        app.log,
+      );
       reply.code(202);
       return { ok: true, accepted: true, to: body.tag };
     },
@@ -127,7 +138,11 @@ export async function registerSwitchRoutes(app: FastifyInstance): Promise<void> 
       reply.code(404);
       return { error: 'no last-known-good recorded' };
     }
-    void runBackgroundSwitch({ tag: entry.tag, skipBackup: true }, app.log);
+    // Pass the recorded full ref, not just the tag: if the operator has
+    // since changed the image repo (Advanced tab), rebuilding
+    // `<repo>:<tag>` would point at the NEW repo — the last-good entry
+    // was recorded from the old one.
+    void runBackgroundSwitch({ tag: entry.tag, image: entry.image, skipBackup: true }, app.log);
     reply.code(202);
     return { ok: true, accepted: true, to: entry.tag };
   });

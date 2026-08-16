@@ -3,6 +3,7 @@ import { Alert, Badge, Container, Nav, NavItem, NavLink } from 'reactstrap';
 import { Dashboard } from './views/Dashboard';
 import { Versions } from './views/Versions';
 import { Logs } from './views/Logs';
+import { Advanced } from './views/Advanced';
 import { api } from './api';
 import { loadSession } from './session';
 import { useApi } from './hooks/useApi';
@@ -10,12 +11,13 @@ import { useThemeSync } from './hooks/useThemeSync';
 import { useToast } from './toast';
 import type { AvailableUpdates, HealthResponse, ImageState } from './types';
 
-type Route = 'dashboard' | 'versions' | 'logs';
+type Route = 'dashboard' | 'versions' | 'logs' | 'advanced';
 
 const ROUTES: { id: Route; label: string }[] = [
   { id: 'dashboard', label: 'Dashboard' },
   { id: 'versions', label: 'Versions' },
   { id: 'logs', label: 'Logs' },
+  { id: 'advanced', label: 'Advanced' },
 ];
 
 function parseHash(hash: string): Route {
@@ -155,6 +157,7 @@ export function App() {
       {route === 'dashboard' ? <Dashboard /> : null}
       {route === 'versions' ? <Versions /> : null}
       {route === 'logs' ? <Logs /> : null}
+      {route === 'advanced' ? <Advanced /> : null}
     </Container>
   );
 }

@@ -22,16 +22,22 @@ import { pruneOldImagesFor } from './image-retention.js';
 import { resolveSignalkHealthUrl } from './signalk-url-resolver.js';
 import { recordOutcome } from './last-outcome.js';
 import type { SwitchResult } from './types.js';
+import { repoOfRef, resolveSignalkImage } from './signalk-image.js';
 
-const SIGNALK_IMAGE = process.env.SIGNALK_IMAGE ?? 'ghcr.io/dirkwa/signalk-server';
 const SIGNALK_QUADLET = 'signalk-server.container';
 const SIGNALK_UNIT = 'signalk-server.service';
 const TRIAL_NAME_PREFIX = 'signalk-updater-trial';
 
-interface SwitchInput {
+export interface SwitchInput {
   tag: string;
   skipBackup?: boolean;
   healthTimeoutMs?: number;
+  /** Full image ref to switch to, overriding `<resolved repo>:<tag>`.
+   *  Internal use only (the rollback route passes the last-good entry's
+   *  recorded ref so a rollback stays on the repo it was recorded from
+   *  even after the operator changed the repo in the Advanced tab). The
+   *  public switch route never forwards this from the client body. */
+  image?: string;
 }
 
 /**
@@ -89,7 +95,11 @@ export async function performSwitch(input: SwitchInput): Promise<SwitchResult> {
 
 async function doSwitch(input: SwitchInput): Promise<SwitchResult> {
   const start = Date.now();
-  const newImage = `${SIGNALK_IMAGE}:${input.tag}`;
+  // Resolve the repo ONCE, inside the mutex, and use the same value for the
+  // pull, the Quadlet rewrite and the prune below — a settings PUT landing
+  // mid-switch must not move the target between those steps.
+  const newImage = input.image ?? `${(await resolveSignalkImage()).image}:${input.tag}`;
+  const signalkImage = repoOfRef(newImage);
   const hooksRun: string[] = [];
   let previousImage: string;
   let snapshotPath: string;
@@ -441,10 +451,14 @@ async function doSwitch(input: SwitchInput): Promise<SwitchResult> {
   // Protect the tag we just switched AWAY from explicitly: on a downgrade or a
   // skipped-version switch the just-replaced image is the real rollback target,
   // which is not necessarily the newest semver that the keep window would keep.
-  const previousTag = previousImage.startsWith(`${SIGNALK_IMAGE}:`)
-    ? previousImage.slice(SIGNALK_IMAGE.length + 1)
+  // On a cross-repo switch (operator changed the repo in the Advanced tab)
+  // the previous ref carries a different prefix → previousTag is undefined,
+  // and the prune below only touches the NEW repo, so the old repo's images
+  // are left alone (the operator may switch back).
+  const previousTag = previousImage.startsWith(`${signalkImage}:`)
+    ? previousImage.slice(signalkImage.length + 1)
     : undefined;
-  await pruneOldImagesFor(SIGNALK_IMAGE, 'signalk-server', {
+  await pruneOldImagesFor(signalkImage, 'signalk-server', {
     // master + beta are channel heads (tagClassifier), not old semver images;
     // latest + dirkwa are protected by default.
     protectTags: ['master', 'beta', ...(previousTag ? [previousTag] : [])],

@@ -1,7 +1,8 @@
 import type { ContainerSnapshot, CurrentState } from './types.js';
 import { resolveRuntime } from './podman/client.js';
 import { getRuntimeIdentity, type VersionTarget } from './runtime-version.js';
-import { readQuadletImageTag } from './quadlet-image-tag.js';
+import { readQuadletImageRef, readQuadletImageTag } from './quadlet-image-tag.js';
+import { repoOfRef } from './signalk-image.js';
 import { getImageDrift } from './image-drift.js';
 import { getSelfVersion } from './routes/health.js';
 import { resolveDoctorHealthUrl, resolveSignalkHealthUrl } from './signalk-url-resolver.js';
@@ -54,6 +55,11 @@ function classifyState(status: string | undefined): ContainerSnapshot['state'] {
 async function inspectOne(target: VersionTarget): Promise<ContainerSnapshot> {
   const identity = await getRuntimeIdentity(target);
   const tag = await readQuadletImageTag(target.quadletName);
+  // OperatorIntent repo (`ghcr.io/owner/name`, no tag) so the webapp can
+  // tell when the Versions tab lists a different repo than the one the
+  // Quadlet currently points at. Absent when the Quadlet is unreadable.
+  const ref = await readQuadletImageRef(target.quadletName);
+  const repoFields = ref !== null ? { imageRepo: repoOfRef(ref) } : {};
   // Image-level freshness. `checkRemote: false` keeps /api/state a hot,
   // network-free read — the 'restart-required' case (newer image pulled,
   // container still on the old one) is computed purely from local podman
@@ -65,6 +71,7 @@ async function inspectOne(target: VersionTarget): Promise<ContainerSnapshot> {
   if (!rt) {
     return {
       tag,
+      ...repoFields,
       digest: '',
       imageState: drift.state,
       version: identity.version,
@@ -99,6 +106,7 @@ async function inspectOne(target: VersionTarget): Promise<ContainerSnapshot> {
     }
     return {
       tag,
+      ...repoFields,
       digest,
       imageState: drift.state,
       version: identity.version,
@@ -112,6 +120,7 @@ async function inspectOne(target: VersionTarget): Promise<ContainerSnapshot> {
     // the purposes of the Dashboard's status indicator.
     return {
       tag,
+      ...repoFields,
       digest: '',
       imageState: drift.state,
       version: identity.version,

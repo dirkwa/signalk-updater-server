@@ -22,6 +22,25 @@ This container holds the Podman socket, the user-instance DBus socket, and write
 - Bearer-token auth on every mutating endpoint (token at `~/.signalk-updater/token`, mode 0600).
 - Read-only endpoints (`/api/health`, `/api/state`) require token-or-localhost; the doctor's read-only probes are the recovery surface and are intentionally unauthenticated.
 
+## Advanced tab: custom image repository
+
+By default the Versions tab lists, pulls and switches `signalk-server` from
+`ghcr.io/dirkwa/signalk-server` (built by
+[signalk-server-images](https://github.com/dirkwa/signalk-server-images)). If you run your own
+fork of that repo, open **Advanced** in the Updater Console and enter your repository, e.g.
+`ghcr.io/<owner>/signalk-server`. The value is validated (GHCR only, no tag, no digest),
+canonicalised, and persisted per install in `~/.signalk-updater/version-settings.json`
+(`imageRepo`). It takes effect immediately for listing and pre-pulls; the running container is
+untouched until the next Switch, which writes the new repository into the Quadlet. Rollback
+always returns to the exact image ref it was recorded from, even after a repository change.
+
+Precedence: the Advanced-tab setting wins; when unset, `SIGNALK_IMAGE` (an env override on the
+engine container, meant for dev/CI) is the default; when neither is set, the built-in dirkwa repo.
+`GET /api/versions/settings` reports `effectiveImageRepo`, `imageRepoSource` (`setting` |
+`default`) and `defaultImageRepo` so you can see which one is in effect. Only `ghcr.io`
+repositories are supported — the engine talks to GHCR's registry API for tag listing and drift
+detection.
+
 ## Local dev
 
 ```bash

@@ -69,6 +69,12 @@ export interface ContainerSnapshot {
    *  what version is actually running — the Quadlet can pin a floating
    *  ref. Use `version` for that. */
   tag: string;
+  /** OperatorIntent: the repository part of the Quadlet's `Image=` line
+   *  (`ghcr.io/dirkwa/signalk-server`), without the tag. Lets the webapp
+   *  notice when the Versions tab lists a different repo than the one the
+   *  container currently runs from. Optional on the wire (older webapps
+   *  ignore it); absent when the Quadlet is unreadable or has no tag. */
+  imageRepo?: string;
   /** Image digest from dockerode (no longer surfaced in the UI; kept on
    *  the wire for backward compat with older webapps). */
   digest: string;
@@ -211,13 +217,31 @@ export interface DriftReport {
   packages: DriftPackage[];
 }
 
-/** Persisted per-installation Versions-tab filter. Lives at
+/** Persisted per-installation Versions-tab settings. Lives at
  *  ~/.signalk-updater/version-settings.json (under /data inside the
  *  container). Defaults to stable-only — beta and master rows stay
  *  hidden until the operator opts in. */
 export interface VersionSettings {
   showBeta: boolean;
   showMaster: boolean;
+  /** Operator override for the signalk-server image repository, canonical
+   *  `ghcr.io/<owner>/<name>` (see src/signalk-image.ts). `null` = use the
+   *  default (`SIGNALK_IMAGE` env, else the built-in dirkwa repo). Set
+   *  from the Advanced tab; drives which repo the Versions tab lists and
+   *  which repo Pull/Switch write into the Quadlet. */
+  imageRepo: string | null;
+}
+
+/** Where the effective signalk-server repo came from. */
+export type ImageRepoSource = 'setting' | 'default';
+
+/** Wire shape of GET/PUT /api/versions/settings: the persisted settings
+ *  plus the resolved repo, so the webapp can show "currently using X"
+ *  and offer a reset without knowing the server's env. */
+export interface VersionSettingsResponse extends VersionSettings {
+  effectiveImageRepo: string;
+  imageRepoSource: ImageRepoSource;
+  defaultImageRepo: string;
 }
 
 /** Locally-pulled signalk-server image, as enumerated by dockerode.

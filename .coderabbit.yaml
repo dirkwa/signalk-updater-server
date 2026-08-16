@@ -271,15 +271,32 @@ reviews:
           `SwitchResult` synchronously. The SSE is additive, not a
           replacement. Don't change the POST to return-then-stream.
 
-        ## Versions filter persistence
+        ## Versions filter persistence + image repo override
 
         `src/version-settings.ts` reads/writes
         `/data/version-settings.json` for the per-install
-        `{showBeta, showMaster}` toggles surfaced on the Versions tab.
-        The PUT route whitelists known keys so a misbehaving client
-        can't pollute the file with arbitrary fields. Defaults are
-        stable-only — both flags `false`. `dirkwa` builds are always
-        shown regardless of either flag (it's the user's own channel).
+        `{showBeta, showMaster, imageRepo}` settings. The booleans are
+        the Versions-tab filters; `imageRepo` is the Advanced-tab
+        override for which GHCR repository holds signalk-server images
+        (`null` = default). The PUT route whitelists known keys so a
+        misbehaving client can't pollute the file with arbitrary
+        fields, and runs `imageRepo` through
+        `src/signalk-image.ts::normalizeImageRepo` (GHCR-only, no
+        tag/digest, canonical `ghcr.io/<owner>/<name>`; 400 on
+        rejection). GET and PUT both return the settings plus
+        `effectiveImageRepo` / `imageRepoSource` / `defaultImageRepo`.
+        Defaults are stable-only — both flags `false`. `dirkwa` builds
+        are always shown regardless of either flag (it's the user's own
+        channel, and also the bucket every unrecognised fork tag lands
+        in).
+
+        `resolveSignalkImage()` is the single resolver (setting >
+        `SIGNALK_IMAGE` env > built-in). Consumers must call it — don't
+        suggest a module-level `SIGNALK_IMAGE` constant. The switch
+        resolves once at the top of `doSwitch` on purpose (a settings
+        PUT mid-switch must not move the target); rollback passes the
+        last-good entry's full `image` ref so it stays on the repo it
+        was recorded from.
 
         ## Local image enumeration
 
