@@ -271,59 +271,36 @@ reviews:
           `SwitchResult` synchronously. The SSE is additive, not a
           replacement. Don't change the POST to return-then-stream.
 
-        ## Versions filter persistence + image repo override
+        ## Versions settings + image repo override
 
-        `src/version-settings.ts` reads/writes
-        `/data/version-settings.json` for the per-install
-        `{showBeta, showMaster, imageRepo}` settings. The booleans are
-        the Versions-tab filters; `imageRepo` is the Advanced-tab
-        override for which GHCR repository holds signalk-server images
-        (`null` = default). The PUT route whitelists known keys so a
-        misbehaving client can't pollute the file with arbitrary
-        fields, and runs `imageRepo` through
+        `src/version-settings.ts` persists `{showBeta, showMaster,
+        imageRepo}` in `/data/version-settings.json`. The PUT route
+        whitelists keys and validates `imageRepo` via
         `src/signalk-image.ts::normalizeImageRepo` (GHCR-only, no
-        tag/digest, canonical `ghcr.io/<owner>/<name>`; 400 on
-        rejection). GET and PUT both return the settings plus
-        `effectiveImageRepo` / `imageRepoSource` / `defaultImageRepo`.
-        Defaults are stable-only — both flags `false`. `dirkwa` builds
-        are always shown regardless of either flag (it's the user's own
-        channel, and also the bucket every unrecognised fork tag lands
-        in).
-
-        `resolveSignalkImage()` is the single resolver (setting >
-        `SIGNALK_IMAGE` env > built-in). Consumers must call it — don't
-        suggest a module-level `SIGNALK_IMAGE` constant. The switch
-        resolves once at the top of `doSwitch` on purpose (a settings
-        PUT mid-switch must not move the target); rollback passes the
-        last-good entry's full `image` ref so it stays on the repo it
-        was recorded from.
+        tag/digest, canonical `ghcr.io/<owner>/<name>`, 400 on reject).
+        `resolveSignalkImage()` (setting > `SIGNALK_IMAGE` env > built-in)
+        is the ONLY resolver — never a module-level constant. `doSwitch`
+        resolves once (a PUT mid-switch must not move the target);
+        rollback passes last-good's full `image` ref. `dirkwa` builds are
+        always shown (also the bucket for unrecognised fork tags).
 
         ## Local image files + source-aware updates
 
-        `src/local-archives.ts` / `src/routes/archives.ts` let the
-        operator drop `podman save` archives into a FIXED folder
-        (`LOCAL_IMAGES_DIR`, default `/data/images` = host
-        `~/.signalk-updater/images`). Rules: routes take a bare file NAME
-        validated by `isValidArchiveName` — never a path, so don't ask
-        for path sanitisation or a configurable directory (the engine
-        container only sees its fixed mounts). Archives are PEEKED via
-        `src/tar-peek.ts` (manifest.json / index.json out of the tar;
-        plain tars by seeking, gz streamed once, cached in
-        `/data/archive-index.json` by size+mtime) — never extracted.
-        `loadArchive` streams the file into dockerode `loadImage` (202 +
-        SSE `'loading'` stage under the shared mutex). Switching to a
-        loaded file uses `performSwitch({ image, skipPull: true, source })`
-        — the pull step becomes a local presence check; the rest of the
-        flow is unchanged. Don't suggest pulling "to be safe": offline is
-        the whole point.
-
-        `src/image-source.ts` records per Quadlet whether the running
-        image came from a registry or an archive; `update-checker`'s
-        signalk-server check is source-aware — registry → the Quadlet
-        ref's own repo (a custom repo is checked against itself), archive
-        → NO GHCR call, `updateAvailable` means a newer file in the
-        folder (`availableArchive`). Don't add a GHCR round-trip to the
-        archive branch.
+        `src/local-archives.ts` / `src/routes/archives.ts`: `podman save`
+        archives in a FIXED folder (`LOCAL_IMAGES_DIR`, default
+        `/data/images`). Routes take a bare NAME validated by
+        `isValidArchiveName` — never a path; the container only sees its
+        fixed mounts, so don't ask for a configurable directory. Archives
+        are PEEKED via `src/tar-peek.ts` (never extracted; cached in
+        `/data/archive-index.json`). Load = dockerode `loadImage`, 202 +
+        SSE `'loading'` under the shared mutex. Switch =
+        `performSwitch({ image, skipPull: true, source })` — a local
+        presence check replaces the pull; don't suggest pulling "to be
+        safe", offline is the point. `src/image-source.ts` records
+        provenance; `update-checker`'s signalk-server check is
+        source-aware: registry → the Quadlet ref's own repo, archive →
+        NO GHCR call, `availableArchive` = newer file. Don't add a GHCR
+        round-trip to the archive branch.
 
         ## Local image enumeration
 
