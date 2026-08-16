@@ -151,5 +151,13 @@ describe('triggerCheck — signalk-server source awareness', () => {
       updateAvailable: true,
       availableArchive: 'newer.tar',
     });
+
+    // The same file name re-copied with newer content counts as new too
+    // (mtime-based, not name-based).
+    await new Promise((res) => setTimeout(res, 20));
+    writeFileSync(join(images, 'current.tar'), 'x-rebuilt');
+    r = await triggerCheck();
+    expect(r.signalkServer.updateAvailable).toBe(true);
+    expect(r.signalkServer.availableArchive).toBe('current.tar');
   });
 });

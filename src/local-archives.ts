@@ -52,10 +52,37 @@ interface IndexEntry {
 }
 type ArchiveIndex = Record<string, IndexEntry>;
 
+/** Only well-formed entries survive a read; anything else (hand edit,
+ *  older shape, corruption) is dropped and simply re-peeked. */
+function sanitizeIndex(parsed: unknown): ArchiveIndex {
+  const out: ArchiveIndex = {};
+  if (typeof parsed !== 'object' || parsed === null) return out;
+  for (const [name, v] of Object.entries(parsed as Record<string, unknown>)) {
+    if (!isValidArchiveName(name) || typeof v !== 'object' || v === null) continue;
+    const e = v as Record<string, unknown>;
+    const refsOk =
+      e.refs === null || (Array.isArray(e.refs) && e.refs.every((r) => typeof r === 'string'));
+    if (
+      typeof e.size !== 'number' ||
+      typeof e.mtimeMs !== 'number' ||
+      !refsOk ||
+      !(e.imageId === null || typeof e.imageId === 'string')
+    ) {
+      continue;
+    }
+    out[name] = {
+      size: e.size,
+      mtimeMs: e.mtimeMs,
+      refs: e.refs as string[] | null,
+      imageId: e.imageId as string | null,
+    };
+  }
+  return out;
+}
+
 async function readIndex(): Promise<ArchiveIndex> {
   try {
-    const parsed: unknown = JSON.parse(await readFile(indexPath(), 'utf8'));
-    return typeof parsed === 'object' && parsed !== null ? (parsed as ArchiveIndex) : {};
+    return sanitizeIndex(JSON.parse(await readFile(indexPath(), 'utf8')));
   } catch {
     return {};
   }
@@ -121,8 +148,23 @@ export function interpretManifests(found: Map<string, Buffer>): {
 
 async function peekArchive(path: string, format: 'tar' | 'tgz'): Promise<Map<string, Buffer>> {
   if (format === 'tar') return peekTarFile(path, WANTED);
-  const stream: Readable = createReadStream(path).pipe(createGunzip());
-  return peekTarStream(stream, WANTED);
+  // The stream walker may bail out early (both manifests seen) or the
+  // gunzip may error on a corrupt file; either way the SOURCE read stream
+  // must be closed too, or its fd leaks until GC. `pipe()` alone won't
+  // do that. Errors surface to the caller (which lists the file with
+  // unknown refs) instead of becoming an unhandled 'error' event.
+  const file = createReadStream(path);
+  const gunzip = createGunzip();
+  const failure = new Promise<never>((_, reject) => {
+    file.once('error', reject);
+    gunzip.once('error', reject);
+  });
+  try {
+    return await Promise.race([peekTarStream(file.pipe(gunzip), WANTED), failure]);
+  } finally {
+    file.destroy();
+    gunzip.destroy();
+  }
 }
 
 // -------------------------------------------------------- local image set
@@ -269,11 +311,16 @@ export async function loadArchive(
       // never let a progress listener break the load
     }
   });
-  const body: Readable = archiveFormat(name) === 'tgz' ? file.pipe(createGunzip()) : file;
+  const gunzip = archiveFormat(name) === 'tgz' ? createGunzip() : null;
+  const body: Readable = gunzip ? file.pipe(gunzip) : file;
 
   const r = await safe(
     () =>
       new Promise<string>((resolve, reject) => {
+        // A read error or a corrupt .tar.gz must reject the load, not
+        // surface as an unhandled 'error' event and take the engine down.
+        file.once('error', reject);
+        gunzip?.once('error', reject);
         rt.client.loadImage(body, { quiet: false }, (err, stream) => {
           if (err) return reject(err);
           if (!stream) return resolve('');
@@ -291,6 +338,7 @@ export async function loadArchive(
       }),
   );
   file.destroy();
+  gunzip?.destroy();
   if (!r.ok) return { ok: false, error: r.error.userMessage };
   const parsed = parseLoadedRefs(r.value);
   if (/^error:/m.test(r.value) && parsed.refs.length === 0) {

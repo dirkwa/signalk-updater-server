@@ -22,6 +22,13 @@ import type { Readable } from 'node:stream';
 
 const BLOCK = 512;
 const ZERO_BLOCK = Buffer.alloc(BLOCK);
+/** Largest entry we are willing to hold in memory (manifests are a few
+ *  KB; PAX/LongLink headers a few hundred bytes). Anything bigger that we
+ *  would otherwise keep is skipped — a corrupt or hostile archive must not
+ *  be able to make us `Buffer.alloc()` gigabytes. */
+export const MAX_KEPT_ENTRY_BYTES = 16 * 1024 * 1024;
+/** Sanity ceiling for any entry size (1 TiB). Bigger = corrupt header. */
+const MAX_ENTRY_BYTES = 2 ** 40;
 
 interface TarHeader {
   name: string;
@@ -50,10 +57,36 @@ function cstr(buf: Buffer, start: number, len: number): string {
   return (nul === -1 ? slice : slice.subarray(0, nul)).toString('utf8');
 }
 
+/** Header checksum: sum of all bytes with the checksum field taken as
+ *  spaces. Rejecting a bad checksum is what stops us from walking a file
+ *  that isn't a tar at all (garbage sizes → garbage seeks / a stuck
+ *  stream walker). Both the unsigned (POSIX) and signed (old GNU) sums are
+ *  accepted, like every tar implementation does. */
+function checksumOk(block: Buffer): boolean {
+  const stored = parseInt(
+    block.subarray(148, 156).toString('ascii').replace(/\0.*$/, '').trim(),
+    8,
+  );
+  if (!Number.isFinite(stored)) return false;
+  let unsigned = 0;
+  let signed = 0;
+  for (let i = 0; i < BLOCK; i++) {
+    const b = i >= 148 && i < 156 ? 0x20 : (block[i] ?? 0);
+    unsigned += b;
+    signed += b > 127 ? b - 256 : b;
+  }
+  return stored === unsigned || stored === signed;
+}
+
+/** Parse a header block. Returns null at the end-of-archive marker AND for
+ *  anything that isn't a plausible tar header (bad checksum, non-finite or
+ *  absurd size) — the walkers stop there rather than seek into nonsense. */
 function parseHeader(block: Buffer): TarHeader | null {
   if (block.length < BLOCK || block.equals(ZERO_BLOCK)) return null;
+  if (!checksumOk(block)) return null;
   const name = cstr(block, 0, 100);
   const size = parseOctalOrBase256(block.subarray(124, 136));
+  if (!Number.isFinite(size) || size < 0 || size > MAX_ENTRY_BYTES) return null;
   const typeflag = String.fromCharCode(block[156] ?? 0);
   const magic = cstr(block, 257, 6);
   const prefix = magic.startsWith('ustar') ? cstr(block, 345, 155) : '';
@@ -101,17 +134,24 @@ export async function peekTarFile(path: string, wanted: Set<string>): Promise<Ma
       pos += BLOCK;
       const dataLen = roundUp(h.size);
       if (h.typeflag === 'L' || h.typeflag === 'x') {
-        // Long-name / PAX header: its data names the NEXT entry.
-        const data = Buffer.alloc(h.size);
-        await fh.read(data, 0, h.size, pos);
-        pendingName =
-          h.typeflag === 'L' ? cstr(data, 0, data.length) : (paxPath(data) ?? pendingName);
+        // Long-name / PAX header: its data names the NEXT entry. An
+        // implausibly large one is ignored (still skipped) rather than read.
+        if (h.size <= MAX_KEPT_ENTRY_BYTES) {
+          const data = Buffer.alloc(h.size);
+          await fh.read(data, 0, h.size, pos);
+          pendingName =
+            h.typeflag === 'L' ? cstr(data, 0, data.length) : (paxPath(data) ?? pendingName);
+        }
         pos += dataLen;
         continue;
       }
       const name = normalizeName(pendingName ?? h.name);
       pendingName = null;
-      if ((h.typeflag === '0' || h.typeflag === '\0') && wanted.has(name)) {
+      if (
+        (h.typeflag === '0' || h.typeflag === '\0') &&
+        wanted.has(name) &&
+        h.size <= MAX_KEPT_ENTRY_BYTES
+      ) {
         const data = Buffer.alloc(h.size);
         await fh.read(data, 0, h.size, pos);
         found.set(name, data);
@@ -184,7 +224,7 @@ export async function peekTarStream(
         name,
         size: h.size,
         typeflag: h.typeflag,
-        keep: meta || (isFile && wanted.has(name)),
+        keep: (meta || (isFile && wanted.has(name))) && h.size <= MAX_KEPT_ENTRY_BYTES,
       };
       remaining = roundUp(h.size);
       if (remaining === 0) {

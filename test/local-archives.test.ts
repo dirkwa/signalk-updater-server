@@ -210,6 +210,36 @@ describe('tar peek', () => {
     expect(interpretManifests(found).refs).toEqual(['ghcr.io/x/y:chunky']);
   });
 
+  it('stops (no hang, no throw) on non-tar bytes and on a bad checksum, in both walkers', async () => {
+    const garbage = Buffer.alloc(4096, 0x41); // "AAAA…" — parses to nonsense sizes
+    const path = join(dir, 'peek-garbage.tar');
+    writeFileSync(path, garbage);
+    expect((await peekTarFile(path, W)).size).toBe(0);
+    expect((await peekTarStream(Readable.from([garbage]), W)).size).toBe(0);
+    // A real header with a corrupted checksum byte is rejected too.
+    const tar = dockerArchive(['ghcr.io/x/y:1.0.0']);
+    tar[150] = 0x39; // stomp the checksum field
+    expect((await peekTarStream(Readable.from([tar]), W)).size).toBe(0);
+  });
+
+  it('never allocates for an entry that claims to be huge (skips it instead)', async () => {
+    // A manifest.json header claiming ~5 GB with no data behind it: the
+    // seek walker must not Buffer.alloc that; it just runs off the end.
+    const h = header('manifest.json', 0, '0');
+    h.write('45000000000\0', 124); // octal 45000000000 ≈ 5.0 GB
+    // recompute checksum
+    h.write('        ', 148);
+    let sum = 0;
+    for (const b of h) sum += b;
+    h.write(sum.toString(8).padStart(6, '0') + '\0 ', 148);
+    const path = join(dir, 'peek-huge.tar');
+    writeFileSync(path, Buffer.concat([h, Buffer.alloc(1024)]));
+    expect((await peekTarFile(path, W)).size).toBe(0);
+    expect(
+      (await peekTarStream(Readable.from([Buffer.concat([h, Buffer.alloc(1024)])]), W)).size,
+    ).toBe(0);
+  });
+
   it('reports unknown for a tar without manifests and empty refs for an id-only save', async () => {
     const none = join(dir, 'peek-none.tar');
     writeFileSync(none, buildTar([{ name: 'random.txt', data: Buffer.from('hi') }]));
@@ -370,6 +400,25 @@ describe('listArchives / loadArchive / deleteArchive', () => {
     expect(progress.length).toBeGreaterThan(0);
     const listed = await listArchives();
     expect(listed.archives[0]?.refs).toEqual(['ghcr.io/x/y:2.0.0']);
+  });
+
+  it('loadArchive fails cleanly (no crash) on a corrupt .tar.gz', async () => {
+    writeFileSync(join(images, 'bad.tar.gz'), Buffer.from('definitely not gzip data'));
+    const r = await loadArchive('bad.tar.gz');
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/incorrect header check|invalid|gzip|zlib/i);
+  });
+
+  it('survives a garbage index file (drops bad entries, re-peeks)', async () => {
+    writeFileSync(join(images, 'a.tar'), dockerArchive(['ghcr.io/x/y:1.0.0']));
+    writeFileSync(
+      process.env.ARCHIVE_INDEX_PATH as string,
+      JSON.stringify({ 'a.tar': { size: 'nope', refs: 'not-an-array' }, '../x.tar': {} }),
+    );
+    const r = await listArchives();
+    expect(r.archives[0]?.refs).toEqual(['ghcr.io/x/y:1.0.0']);
+    writeFileSync(process.env.ARCHIVE_INDEX_PATH as string, '{not json');
+    expect((await listArchives()).archives[0]?.refs).toEqual(['ghcr.io/x/y:1.0.0']);
   });
 
   it('loadArchive rejects bad names and missing files without touching the runtime', async () => {

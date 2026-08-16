@@ -8,9 +8,15 @@ import { dirname } from 'node:path';
  * the renamed entry isn't durable across a power loss, which on a boat is
  * the realistic failure.
  */
+let seq = 0;
+
 export async function writeAtomic(path: string, body: string, mode = 0o644): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
-  const tmp = `${path}.${process.pid}.tmp`;
+  // Unique per call, not just per process: two concurrent writers in the
+  // same process (e.g. the webapp poll and the update-checker both
+  // refreshing the archive index) must not share a tmp file, or one
+  // rename can publish the other's half-written content.
+  const tmp = `${path}.${process.pid}.${++seq}.tmp`;
   const fh = await open(tmp, 'w', mode);
   try {
     await fh.write(body);

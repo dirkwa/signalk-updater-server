@@ -126,7 +126,7 @@ async function checkSignalk(target: VersionTarget): Promise<UpdateInfo> {
     }),
   ]);
   if (src.source === 'archive') {
-    const newer = await newerArchivesThan(src.archive ?? '', src.archiveMtimeMs ?? 0);
+    const newer = await newerArchivesThan(src.archiveMtimeMs ?? 0);
     const newest = newer[0];
     return {
       currentTag: identity.version ?? 'unknown',
@@ -144,13 +144,16 @@ async function checkSignalk(target: VersionTarget): Promise<UpdateInfo> {
   };
 }
 
-/** Names of local image files newer than the one in use, newest first.
- *  Best-effort: an unreadable folder means "no news", never a throw. */
-async function newerArchivesThan(currentName: string, currentMtimeMs: number): Promise<string[]> {
+/** Names of local image files newer (by mtime) than the one in use, newest
+ *  first. Purely mtime-based on purpose: the file we switched from has an
+ *  mtime EQUAL to the record (never greater), and a newer build copied in
+ *  under the same name is a new file too. Best-effort: an unreadable
+ *  folder means "no news", never a throw. */
+async function newerArchivesThan(currentMtimeMs: number): Promise<string[]> {
   try {
     const { archives } = await listArchives();
     return archives
-      .filter((a) => a.name !== currentName && Date.parse(a.mtime) > currentMtimeMs)
+      .filter((a) => Date.parse(a.mtime) > currentMtimeMs)
       .sort((a, b) => Date.parse(b.mtime) - Date.parse(a.mtime))
       .map((a) => a.name);
   } catch {
