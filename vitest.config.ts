@@ -17,6 +17,9 @@ export default defineConfig({
           name: 'server',
           environment: 'node',
           include: ['test/**/*.test.ts'],
+          // Keeps createServer()'s boot-time GHCR query off the network for
+          // every server test — see test/test-setup.ts for why.
+          setupFiles: [resolve(here, 'test/test-setup.ts')],
         },
       },
       {

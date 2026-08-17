@@ -37,12 +37,9 @@ vi.mock('../src/podman/client.js', () => ({
   },
 }));
 
-// The update-checker fires a boot-time GHCR query from createServer(). Stubbed
-// so the suite does not reach the internet to test a local route.
-vi.mock('../src/update-checker.js', () => ({
-  startUpdateChecker: vi.fn(),
-  invalidate: vi.fn(),
-}));
+// The update-checker's boot-time GHCR query is stubbed for the whole server
+// suite in test/test-setup.ts — it arrives via createServer(), so it is not
+// this test's business to remember.
 
 interface HealthBody {
   ok: boolean;
