@@ -266,11 +266,11 @@ export async function listArchives(): Promise<ArchivesResponse> {
     }),
   );
 
-  const rows: Array<Omit<ArchiveInfo, 'loaded'>> = [];
+  const present: Array<{ name: string; size: number; mtimeMs: number }> = [];
   for (const item of stats) {
     if (!item) continue;
     const { name, st } = item;
-    const format = archiveFormat(name);
+    present.push({ name, size: st.size, mtimeMs: st.mtimeMs });
     const cached = index[name];
     let entry: IndexEntry;
     if (cached && cached.size === st.size && cached.mtimeMs === st.mtimeMs) {
@@ -279,7 +279,7 @@ export async function listArchives(): Promise<ArchivesResponse> {
       let peek = { refs: null as string[] | null, imageId: null as string | null };
       try {
         peek = interpretManifests(
-          await peekArchiveShared(join(dir, name), format, st.size, st.mtimeMs),
+          await peekArchiveShared(join(dir, name), archiveFormat(name), st.size, st.mtimeMs),
         );
       } catch {
         // unreadable / not a tar — keep it listed with unknown refs so the
@@ -289,30 +289,39 @@ export async function listArchives(): Promise<ArchivesResponse> {
       changed = true;
     }
     next[name] = entry;
-    rows.push({
+  }
+  // Merge under the lock against a FRESH read: a load that finished while
+  // we were peeking may have enriched an entry (refs for a gz whose peek
+  // came up empty) — an entry for the same file (size+mtime) already on
+  // disk wins over what we computed. The response is built from the merged
+  // map, so callers see the enriched entry immediately, not on the next
+  // listing.
+  const merged = await withIndexLock(async () => {
+    const cur = await readIndex();
+    const out: ArchiveIndex = {};
+    for (const [n, e] of Object.entries(next)) {
+      const c = cur[n];
+      out[n] = c && c.size === e.size && c.mtimeMs === e.mtimeMs ? c : e;
+    }
+    const dirty =
+      changed ||
+      Object.keys(cur).length !== Object.keys(out).length ||
+      Object.keys(out).some((n) => !(n in cur));
+    if (dirty) await writeAtomicJson(indexPath(), out).catch(() => undefined);
+    return out;
+  }).catch(() => next);
+
+  const rows: Array<Omit<ArchiveInfo, 'loaded'>> = present.map(({ name, size, mtimeMs }) => {
+    const e = merged[name] ?? next[name] ?? { size, mtimeMs, refs: null, imageId: null };
+    return {
       name,
-      size: st.size,
-      mtime: new Date(st.mtimeMs).toISOString(),
-      format,
-      refs: entry.refs,
-      imageId: entry.imageId,
-    });
-  }
-  if (changed || Object.keys(index).length !== Object.keys(next).length) {
-    // Merge under the lock against a FRESH read: a load that finished while
-    // we were peeking may have enriched an entry (refs for a gz whose peek
-    // came up empty) — an entry for the same file (size+mtime) already on
-    // disk wins over what we computed.
-    await withIndexLock(async () => {
-      const cur = await readIndex();
-      const merged: ArchiveIndex = {};
-      for (const [n, e] of Object.entries(next)) {
-        const c = cur[n];
-        merged[n] = c && c.size === e.size && c.mtimeMs === e.mtimeMs ? c : e;
-      }
-      await writeAtomicJson(indexPath(), merged);
-    }).catch(() => undefined);
-  }
+      size,
+      mtime: new Date(mtimeMs).toISOString(),
+      format: archiveFormat(name),
+      refs: e.refs,
+      imageId: e.imageId,
+    };
+  });
 
   const local = await localImageSet();
   const archives: ArchiveInfo[] = rows.map((r) => ({

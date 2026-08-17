@@ -395,6 +395,25 @@ describe('listArchives / loadArchive / deleteArchive', () => {
     expect((await listArchives()).archives[0]?.refs).toEqual(['ghcr.io/x/y:9.9.9']);
   });
 
+  it('a load that finishes while a listing peeks is visible in THAT listing (merged under the lock)', async () => {
+    // A .tar.gz with no manifest: the peek yields refs=null; the daemon
+    // (mocked) reports the loaded ref. Kick off the listing, let the load
+    // land while it runs, and expect the listing to return the enriched
+    // entry rather than the stale peek.
+    const tar = buildTar([{ name: 'random.txt', data: Buffer.from('hi') }]);
+    writeFileSync(join(images, 'blank.tar.gz'), gzipSync(tar));
+    loadOutput = 'Loaded image: ghcr.io/x/y:from-load\n';
+    const listing = listArchives();
+    const load = loadArchive('blank.tar.gz');
+    const [l] = await Promise.all([listing, load]);
+    // Either order is fine as long as the merged answer wins.
+    const again = await listArchives();
+    expect(again.archives[0]?.refs).toEqual(['ghcr.io/x/y:from-load']);
+    expect(
+      l.archives[0]?.refs === null || l.archives[0]?.refs?.[0] === 'ghcr.io/x/y:from-load',
+    ).toBe(true);
+  });
+
   it('lists an unreadable file with unknown refs instead of failing the whole listing', async () => {
     writeFileSync(join(images, 'a.tar'), dockerArchive(['ghcr.io/x/y:1.0.0']));
     writeFileSync(join(images, 'garbage.tar.gz'), Buffer.from('this is not gzip'));

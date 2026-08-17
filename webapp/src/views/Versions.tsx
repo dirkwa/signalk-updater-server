@@ -427,9 +427,11 @@ export function Versions() {
 
   const doSwitchArchive = useCallback(
     async (a: ArchiveInfo): Promise<void> => {
-      const ref = a.refs?.[0] ?? a.name;
+      // Name the FILE, not a ref: a multi-tag archive's actual target ref is
+      // picked server-side (repo-preferred, else first) and echoed in the
+      // 202 / SSE events.
       const r = await confirm.ask({
-        title: `Switch to ${ref}?`,
+        title: `Switch to the image in ${a.name}?`,
         body: 'signalk-server will be stopped and restarted on the image loaded from this file. No registry is contacted. A pre-switch backup runs if signalk-backup is installed. Estimated downtime: 30–90s.',
         okLabel: 'Switch',
         showSkipBackup: true,
@@ -437,7 +439,7 @@ export function Versions() {
       if (!r.confirmed) return;
       try {
         switchInitiatedRef.current = true;
-        toast.show(`Switching to ${ref}… (progress below)`, 'info');
+        toast.show(`Switching to the image in ${a.name}… (progress below)`, 'info');
         await api('/api/versions/archives/switch', {
           method: 'POST',
           body: { name: a.name, skipBackup: r.skipBackup },
