@@ -12,8 +12,15 @@ const dir = mkdtempSync(join(tmpdir(), 'mutex-test-'));
 const lockPath = join(dir, 'operation.lock');
 process.env.OPERATION_LOCK = lockPath;
 
-const { withMutex, MutexBusyError, STALE_LOCK_MS, forceClear, readLock, releaseStaleLockAtBoot } =
-  await import('../src/mutex.js');
+const {
+  withMutex,
+  MutexBusyError,
+  STALE_LOCK_MS,
+  forceClear,
+  readLock,
+  releaseStaleLockAtBoot,
+  __stealStaleLockForTests,
+} = await import('../src/mutex.js');
 
 async function exists(p: string): Promise<boolean> {
   try {
@@ -116,6 +123,94 @@ describe('withMutex / stale-lock reclaim', () => {
     expect(maxConcurrent).toBe(1);
     expect(ran).toBe(1);
     expect(busy).toBe(1);
+  });
+
+  it('the reclaim path puts back a FRESH lock it renamed away (the TOCTOU guard)', async () => {
+    // Drives stealStaleLock directly against a lock that is fresh AT RENAME
+    // TIME — the exact state B sees after A won the steal and installed its
+    // own lock. Before the guard, B renamed A's fresh lock away, unlinked
+    // it, wx-created its own and entered: two holders (the CI flake).
+    const fresh = {
+      owner: 'updater',
+      operation: 'switch',
+      startedAt: new Date().toISOString(),
+      pid: 4242,
+    };
+    await writeFile(lockPath, JSON.stringify(fresh));
+    const me = {
+      owner: 'updater' as const,
+      operation: 'doctor-switch' as const,
+      startedAt: new Date().toISOString(),
+      pid: process.pid,
+    };
+    const won = await __stealStaleLockForTests(me);
+    expect(won).toBe(false);
+    // The live lock is back at LOCK_PATH, byte-for-byte, and no claim
+    // carcass was left behind.
+    expect(JSON.parse(await readFile(lockPath, 'utf8'))).toEqual(fresh);
+    const { readdirSync } = await import('node:fs');
+    expect(readdirSync(dir).filter((f) => f.includes('.steal.'))).toEqual([]);
+  });
+
+  it('the reclaim path wins a genuinely stale lock and installs its own', async () => {
+    const stale = {
+      owner: 'updater',
+      operation: 'switch',
+      startedAt: new Date(Date.now() - (STALE_LOCK_MS + 60_000)).toISOString(),
+    };
+    await writeFile(lockPath, JSON.stringify(stale));
+    const me = {
+      owner: 'updater' as const,
+      operation: 'doctor-switch' as const,
+      startedAt: new Date().toISOString(),
+      pid: process.pid,
+    };
+    expect(await __stealStaleLockForTests(me)).toBe(true);
+    expect(await readLock()).toEqual(me);
+  });
+
+  it('an unreadable carcass (lock caught mid-write) is treated as live, not stolen', async () => {
+    await writeFile(lockPath, ''); // wx-created, contents not yet written
+    const me = {
+      owner: 'updater' as const,
+      operation: 'switch' as const,
+      startedAt: new Date().toISOString(),
+      pid: process.pid,
+    };
+    expect(await __stealStaleLockForTests(me)).toBe(false);
+    expect(await exists(lockPath)).toBe(true);
+    expect(await readFile(lockPath, 'utf8')).toBe('');
+  });
+
+  it('two concurrent reclaimers never both enter — 25 rounds', async () => {
+    // The original race, repeated: the guard must hold every time, not
+    // just when the scheduler happens to be kind.
+    for (let round = 0; round < 25; round++) {
+      await rm(lockPath, { force: true });
+      const staleStarted = new Date(Date.now() - (STALE_LOCK_MS + 60_000)).toISOString();
+      await writeFile(
+        lockPath,
+        JSON.stringify({ owner: 'updater', operation: 'switch', startedAt: staleStarted }),
+      );
+      let inside = 0;
+      let maxConcurrent = 0;
+      let releaseAll!: () => void;
+      const gate = new Promise<void>((r) => (releaseAll = r));
+      const body = async (): Promise<'ran'> => {
+        inside += 1;
+        maxConcurrent = Math.max(maxConcurrent, inside);
+        await gate;
+        inside -= 1;
+        return 'ran';
+      };
+      const a = withMutex('switch', body).catch((e) => e as Error);
+      const b = withMutex('doctor-switch', body).catch((e) => e as Error);
+      await new Promise((r) => setTimeout(r, 5));
+      releaseAll();
+      const [ra, rb] = await Promise.all([a, b]);
+      expect(maxConcurrent, `round ${round}`).toBe(1);
+      expect([ra, rb].filter((x) => x === 'ran').length, `round ${round}`).toBe(1);
+    }
   });
 
   it('does NOT steal a FRESH lock (younger than the TTL)', async () => {
