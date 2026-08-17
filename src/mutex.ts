@@ -194,11 +194,32 @@ export async function withMutex<T>(operation: Operation, fn: () => Promise<T>): 
   try {
     return await fn();
   } finally {
-    try {
-      await unlink(LOCK_PATH);
-    } catch {
-      // best-effort
-    }
+    await releaseOwn(info);
+  }
+}
+
+/**
+ * Release ONLY the lock we installed. If LOCK_PATH now holds someone else's
+ * lock (the residual reclaim window described on claimLockIfStale, or an
+ * operator's manual intervention), leave it — an unconditional unlink here
+ * would silently open the door for a second operation. Unreadable content
+ * is treated as "not ours" for the same reason; a lock that really is
+ * orphaned is picked up by the stale reclaim / boot cleanup / forceClear.
+ */
+async function releaseOwn(mine: LockInfo): Promise<void> {
+  const current = await readLock();
+  if (!current) return; // already gone
+  const ours = current.pid === mine.pid && current.startedAt === mine.startedAt;
+  if (!ours) {
+    console.warn(
+      `mutex: not releasing ${LOCK_PATH} — held by ${current.owner}/${current.operation} since ${current.startedAt}, not us`,
+    );
+    return;
+  }
+  try {
+    await unlink(LOCK_PATH);
+  } catch {
+    // best-effort
   }
 }
 

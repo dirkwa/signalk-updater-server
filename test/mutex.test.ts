@@ -224,6 +224,32 @@ describe('withMutex / stale-lock reclaim', () => {
     }
   });
 
+  it('release only removes OUR lock, never one that replaced it', async () => {
+    // If, on the residual reclaim path, someone else's lock ends up at
+    // LOCK_PATH while we think we hold it, our release must not remove
+    // theirs (that would open the door for a second operation).
+    const foreign = {
+      owner: 'doctor',
+      operation: 'doctor-switch',
+      startedAt: new Date().toISOString(),
+      pid: 999999,
+    };
+    const { warn } = console;
+    console.warn = () => undefined;
+    try {
+      await withMutex('switch', async () => {
+        await writeFile(lockPath, JSON.stringify(foreign));
+      });
+    } finally {
+      console.warn = warn;
+    }
+    expect(JSON.parse(await readFile(lockPath, 'utf8'))).toEqual(foreign);
+    await rm(lockPath, { force: true });
+    // …and a normal run still releases its own lock.
+    await withMutex('switch', async () => undefined);
+    expect(await exists(lockPath)).toBe(false);
+  });
+
   it('does NOT steal a FRESH lock (younger than the TTL)', async () => {
     const freshStarted = new Date(Date.now() - 5_000).toISOString();
     await writeFile(
