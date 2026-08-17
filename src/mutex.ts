@@ -1,4 +1,4 @@
-import { open, rename, unlink } from 'node:fs/promises';
+import { link, open, rename, unlink } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import type { LockInfo } from './types.js';
 
@@ -33,8 +33,12 @@ async function writeAtomic(path: string, body: string): Promise<void> {
 }
 
 export async function readLock(): Promise<LockInfo | null> {
+  return readLockAt(LOCK_PATH);
+}
+
+async function readLockAt(path: string): Promise<LockInfo | null> {
   try {
-    const fh = await open(LOCK_PATH, 'r');
+    const fh = await open(path, 'r');
     try {
       const text = (await fh.readFile()).toString('utf8');
       return JSON.parse(text) as LockInfo;
@@ -88,31 +92,70 @@ async function writeLockFile(info: LockInfo): Promise<boolean> {
 
 let stealSeq = 0;
 
+type ClaimOutcome = 'won' | 'lost' | 'yanked-fresh';
+
 /**
  * Atomically claim a stale lock by RENAMING it out of the way, not
  * unlink+recreate. `rename(LOCK_PATH, …)` of the same source path is
  * atomic: when two processes both try to steal the same stale lock, only
  * one rename of LOCK_PATH succeeds — the others get ENOENT because the
- * file is already gone. So exactly one process "wins" the steal and then
- * creates the fresh lock with `wx`. unlink+recreate is NOT race-free here:
- * two reclaimers can both unlink (idempotent) and both `wx`-create in the
- * gap, double-acquiring. Returns true only for the single winner.
+ * file is already gone. unlink+recreate is NOT race-free here: two
+ * reclaimers can both unlink (idempotent) and both `wx`-create in the gap,
+ * double-acquiring.
+ *
+ * The rename alone is not enough either (CI flake, 2026-07 and 2026-08):
+ * it moves whatever is at LOCK_PATH AT RENAME TIME, not the stale lock the
+ * caller examined. A and B both read the stale lock; A wins the rename,
+ * `wx`-creates its FRESH lock and enters the critical section; B's rename
+ * then succeeds by yanking A's fresh lock, and B enters too — CC-5
+ * violated. So after winning we RE-EXAMINE the carcass: if it is fresh (or
+ * unreadable — a lock caught mid-write, whose owner will finish writing
+ * into the same inode) we yanked a live lock and put it back with
+ * `link()`, which fails with EEXIST instead of clobbering a lock that
+ * appeared meanwhile. Only a carcass that is really stale counts as won.
+ *
+ * Residual: a three-party sub-millisecond window (B yanks A's fresh lock,
+ * C `wx`-creates before B's link, so A and C both believe they hold it).
+ * Locks are held for minutes and reclaim is a rare recovery path, so this
+ * is accepted rather than adding a heavier protocol.
  */
-async function stealStaleLock(info: LockInfo): Promise<boolean> {
+async function claimLockIfStale(kind: 'steal' | 'bootsteal'): Promise<ClaimOutcome> {
   stealSeq += 1;
-  const claimPath = `${LOCK_PATH}.steal.${process.pid}.${stealSeq}`;
+  const claimPath = `${LOCK_PATH}.${kind}.${process.pid}.${stealSeq}`;
   try {
     await rename(LOCK_PATH, claimPath);
   } catch {
-    // Lost the rename race (someone else stole/released it first), or the
-    // file vanished. Either way we did not win — fall through to a plain
-    // create attempt in case it's now free.
-    return writeLockFile(info);
+    return 'lost';
   }
-  // We won the steal. Drop the carcass and install our lock.
+  const carcass = await readLockAt(claimPath);
+  const age = carcass ? lockAgeMs(carcass) : null;
+  const reallyStale = carcass !== null && age !== null && age > STALE_LOCK_MS;
+  if (!reallyStale) {
+    // Live (or not-yet-readable) lock — restore it non-clobberingly.
+    try {
+      await link(claimPath, LOCK_PATH);
+    } catch {
+      // EEXIST: someone else already installed a lock; theirs stands.
+    }
+    await unlink(claimPath).catch(() => undefined);
+    return 'yanked-fresh';
+  }
   await unlink(claimPath).catch(() => undefined);
+  return 'won';
+}
+
+async function stealStaleLock(info: LockInfo): Promise<boolean> {
+  const outcome = await claimLockIfStale('steal');
+  if (outcome === 'yanked-fresh') return false;
+  // 'won': the stale lock is gone, install ours. 'lost': someone else
+  // stole/released it first, or it vanished — a plain create may now
+  // succeed, and if not the caller reports busy.
   return writeLockFile(info);
 }
+
+/** Test seam: drive the reclaim path directly against whatever is at
+ *  LOCK_PATH, without racing two withMutex bodies. */
+export const __stealStaleLockForTests = stealStaleLock;
 
 async function tryAcquire(info: LockInfo): Promise<boolean> {
   if (await writeLockFile(info)) return true;
@@ -151,11 +194,32 @@ export async function withMutex<T>(operation: Operation, fn: () => Promise<T>): 
   try {
     return await fn();
   } finally {
-    try {
-      await unlink(LOCK_PATH);
-    } catch {
-      // best-effort
-    }
+    await releaseOwn(info);
+  }
+}
+
+/**
+ * Release ONLY the lock we installed. If LOCK_PATH now holds someone else's
+ * lock (the residual reclaim window described on claimLockIfStale, or an
+ * operator's manual intervention), leave it — an unconditional unlink here
+ * would silently open the door for a second operation. Unreadable content
+ * is treated as "not ours" for the same reason; a lock that really is
+ * orphaned is picked up by the stale reclaim / boot cleanup / forceClear.
+ */
+async function releaseOwn(mine: LockInfo): Promise<void> {
+  const current = await readLock();
+  if (!current) return; // already gone
+  const ours = current.pid === mine.pid && current.startedAt === mine.startedAt;
+  if (!ours) {
+    console.warn(
+      `mutex: not releasing ${LOCK_PATH} — held by ${current.owner}/${current.operation} since ${current.startedAt}, not us`,
+    );
+    return;
+  }
+  try {
+    await unlink(LOCK_PATH);
+  } catch {
+    // best-effort
   }
 }
 
@@ -193,17 +257,12 @@ export async function releaseStaleLockAtBoot(): Promise<BootLockOutcome> {
     // null age = unparseable startedAt; fail safe toward "leave it" so we
     // never steal something we can't reason about.
     if (age === null || age <= STALE_LOCK_MS) return { cleared: false, reason: 'fresh' };
-    // Atomic claim-then-drop: only the winner of the rename removes it, so
-    // a concurrently-booting doctor doesn't double-clear.
-    stealSeq += 1;
-    const claimPath = `${LOCK_PATH}.bootsteal.${process.pid}.${stealSeq}`;
-    try {
-      await rename(LOCK_PATH, claimPath);
-    } catch {
-      // Someone else (doctor) reclaimed/released first — nothing to do.
-      return { cleared: false, reason: 'fresh' };
-    }
-    await unlink(claimPath).catch(() => undefined);
+    // Atomic claim-then-drop with the same fresh-carcass guard as the
+    // runtime reclaim: only the winner of the rename removes it, and a lock
+    // that turned fresh between our read and our rename (a doctor that just
+    // acquired) is put back untouched.
+    const outcome = await claimLockIfStale('bootsteal');
+    if (outcome !== 'won') return { cleared: false, reason: 'fresh' };
     return { cleared: true, lock, ageMs: age };
   } catch {
     // Any unexpected fs error: leave the lock and let boot proceed. The
