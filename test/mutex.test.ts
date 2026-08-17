@@ -205,9 +205,20 @@ describe('withMutex / stale-lock reclaim', () => {
       };
       const a = withMutex('switch', body).catch((e) => e as Error);
       const b = withMutex('doctor-switch', body).catch((e) => e as Error);
-      await new Promise((r) => setTimeout(r, 5));
+      // Deterministic: the loser settles with MutexBusyError while the
+      // winner is parked on the gate — wait for that, then release. If BOTH
+      // got in (the bug), neither settles; the timeout keeps the test from
+      // hanging and the assertions below fail loudly.
+      const first = await Promise.race([
+        a,
+        b,
+        new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), 2000)),
+      ]);
       releaseAll();
       const [ra, rb] = await Promise.all([a, b]);
+      expect(first, `round ${round}: loser should have been rejected busy`).toBeInstanceOf(
+        MutexBusyError,
+      );
       expect(maxConcurrent, `round ${round}`).toBe(1);
       expect([ra, rb].filter((x) => x === 'ran').length, `round ${round}`).toBe(1);
     }
