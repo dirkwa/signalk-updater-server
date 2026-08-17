@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
-import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, act, within } from '@testing-library/react';
 import { Versions } from './Versions';
 import { ToastProvider } from '../toast';
 import { ConfirmProvider } from '../confirm';
 import { StubEventSource } from '../../test-setup';
 import type {
+  ArchivesResponse,
   AvailableUpdates,
   CurrentState,
   VersionSettingsResponse,
@@ -16,19 +17,31 @@ import type {
 // leaked mock can't bleed into a later test in the same file.
 const originalFetch = globalThis.fetch;
 
+const fetchCalls: Array<{ method: string; path: string; body: unknown }> = [];
+
 function mockFetch(map: Record<string, unknown>): void {
-  globalThis.fetch = vi.fn(async (input: Parameters<typeof fetch>[0]) => {
-    const url =
-      typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
-    const path = new URL(url, 'http://localhost').pathname;
-    if (path in map) {
-      return new Response(JSON.stringify(map[path]), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
+  fetchCalls.length = 0;
+  globalThis.fetch = vi.fn(
+    async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const url =
+        typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      const path = new URL(url, 'http://localhost').pathname;
+      fetchCalls.push({
+        method: init?.method ?? 'GET',
+        path,
+        body: typeof init?.body === 'string' ? JSON.parse(init.body) : undefined,
       });
-    }
-    return new Response(JSON.stringify({ error: 'not mocked' }), { status: 404 });
-  }) as typeof fetch;
+      if (path in map) {
+        const v = map[path];
+        if (v instanceof Response) return v.clone();
+        return new Response(JSON.stringify(v), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ error: 'not mocked' }), { status: 404 });
+    },
+  ) as typeof fetch;
 }
 
 const sampleVersions: VersionsResponse = {
@@ -183,6 +196,31 @@ function renderVersions() {
   );
 }
 
+const noArchives: ArchivesResponse = { dir: '/data/images', archives: [] };
+const sampleArchives: ArchivesResponse = {
+  dir: '/data/images',
+  archives: [
+    {
+      name: 'signalk-server-2.25.0.tar',
+      size: 1_200_000_000,
+      mtime: '2026-08-16T12:00:00Z',
+      format: 'tar',
+      refs: ['ghcr.io/dirkwa/signalk-server:2.25.0'],
+      imageId: 'sha256:' + 'c'.repeat(64),
+      loaded: false,
+    },
+    {
+      name: 'signalk-server-2.23.1.tar.gz',
+      size: 400_000_000,
+      mtime: '2026-08-10T12:00:00Z',
+      format: 'tgz',
+      refs: ['ghcr.io/dirkwa/signalk-server:v2.23.1'],
+      imageId: null,
+      loaded: true,
+    },
+  ],
+};
+
 describe('Versions', () => {
   beforeEach(() => {
     StubEventSource.instances = [];
@@ -191,6 +229,7 @@ describe('Versions', () => {
       '/api/state': sampleState,
       '/api/versions/settings': defaultSettings,
       '/api/updates/available': noUpdates,
+      '/api/versions/archives': noArchives,
     });
   });
 
@@ -231,6 +270,7 @@ describe('Versions', () => {
       '/api/state': sampleState,
       '/api/versions/settings': forkSettings,
       '/api/updates/available': noUpdates,
+      '/api/versions/archives': noArchives,
     });
     renderVersions();
     await screen.findByText('stable');
@@ -425,5 +465,213 @@ describe('Versions', () => {
       });
     });
     expect(await screen.findByText('Switch progress')).toBeInTheDocument();
+  });
+
+  describe('Local image files card', () => {
+    it('renders offline (GHCR listing failing) with the folder empty-state', async () => {
+      mockFetch({
+        '/api/versions': new Response(
+          JSON.stringify({ error: 'GHCR unreachable', kind: 'network' }),
+          {
+            status: 503,
+            headers: { 'content-type': 'application/json' },
+          },
+        ),
+        '/api/state': sampleState,
+        '/api/versions/settings': defaultSettings,
+        '/api/updates/available': noUpdates,
+        '/api/versions/archives': noArchives,
+      });
+      renderVersions();
+      expect(await screen.findByText('Local image files')).toBeInTheDocument();
+      expect(await screen.findByText(/No image files yet/)).toBeInTheDocument();
+    });
+
+    it('lists archives; Switch is disabled until loaded; Load posts the name', async () => {
+      mockFetch({
+        '/api/versions': sampleVersions,
+        '/api/state': sampleState,
+        '/api/versions/settings': defaultSettings,
+        '/api/updates/available': noUpdates,
+        '/api/versions/archives': sampleArchives,
+        '/api/versions/archives/load': {
+          ok: true,
+          accepted: true,
+          name: 'signalk-server-2.25.0.tar',
+        },
+      });
+      renderVersions();
+      const rowNew = (await screen.findByText('signalk-server-2.25.0.tar')).closest('tr');
+      const rowLoaded = screen.getByText('signalk-server-2.23.1.tar.gz').closest('tr');
+      expect(rowNew).not.toBeNull();
+      expect(rowLoaded).not.toBeNull();
+      // Not loaded → Load offered, Switch disabled.
+      const newButtons = within(rowNew as HTMLElement).getAllByRole('button');
+      const loadBtn = newButtons.find((b) => b.textContent?.trim() === 'Load');
+      const switchBtn = newButtons.find((b) => b.textContent?.trim() === 'Switch');
+      expect(loadBtn).toBeEnabled();
+      expect(switchBtn).toBeDisabled();
+      // Loaded → Reload + Switch enabled, "loaded" pill.
+      expect(within(rowLoaded as HTMLElement).getByText('loaded')).toBeInTheDocument();
+      const loadedButtons = within(rowLoaded as HTMLElement).getAllByRole('button');
+      expect(loadedButtons.find((b) => b.textContent?.trim() === 'Switch')).toBeEnabled();
+      expect(loadedButtons.find((b) => b.textContent?.trim() === 'Reload')).toBeEnabled();
+
+      fireEvent.click(loadBtn as HTMLElement);
+      await waitFor(() => {
+        expect(
+          fetchCalls.some(
+            (c) =>
+              c.method === 'POST' &&
+              c.path === '/api/versions/archives/load' &&
+              JSON.stringify(c.body) === JSON.stringify({ name: 'signalk-server-2.25.0.tar' }),
+          ),
+        ).toBe(true);
+      });
+    });
+
+    it('clears the Load spinner and toasts on the SSE terminal event (complete and failed)', async () => {
+      mockFetch({
+        '/api/versions': sampleVersions,
+        '/api/state': sampleState,
+        '/api/versions/settings': defaultSettings,
+        '/api/updates/available': noUpdates,
+        '/api/versions/archives': sampleArchives,
+        '/api/versions/archives/load': {
+          ok: true,
+          accepted: true,
+          name: 'signalk-server-2.25.0.tar',
+        },
+      });
+      renderVersions();
+      const row = (await screen.findByText('signalk-server-2.25.0.tar')).closest('tr');
+      const loadBtn = within(row as HTMLElement)
+        .getAllByRole('button')
+        .find((b) => b.textContent?.trim() === 'Load') as HTMLElement;
+      fireEvent.click(loadBtn);
+      // While in flight every archive action is disabled.
+      await waitFor(() => {
+        expect(loadBtn).toBeDisabled();
+      });
+      const es = StubEventSource.instances.at(-1);
+      if (!es) throw new Error('expected an EventSource to be opened');
+      act(() => {
+        es.emit({
+          stage: 'complete',
+          target: 'signalk-server',
+          to: 'signalk-server-2.25.0.tar',
+          message: 'Loaded ghcr.io/dirkwa/signalk-server:2.25.0',
+          at: new Date().toISOString(),
+        });
+      });
+      // Toast + progress card both carry the message.
+      expect(
+        (await screen.findAllByText('Loaded ghcr.io/dirkwa/signalk-server:2.25.0')).length,
+      ).toBeGreaterThan(0);
+      await waitFor(() => {
+        const btn = within(
+          screen.getByText('signalk-server-2.25.0.tar').closest('tr') as HTMLElement,
+        )
+          .getAllByRole('button')
+          .find((b) => /^(Load|Reload)$/.test(b.textContent?.trim() ?? ''));
+        expect(btn).toBeEnabled();
+      });
+
+      // Second load that fails: the failure toast names the error.
+      fireEvent.click(
+        within(screen.getByText('signalk-server-2.25.0.tar').closest('tr') as HTMLElement)
+          .getAllByRole('button')
+          .find((b) => /^(Load|Reload)$/.test(b.textContent?.trim() ?? '')) as HTMLElement,
+      );
+      await waitFor(() => {
+        expect(fetchCalls.filter((c) => c.path === '/api/versions/archives/load').length).toBe(2);
+      });
+      act(() => {
+        es.emit({
+          stage: 'failed',
+          target: 'signalk-server',
+          to: 'signalk-server-2.25.0.tar',
+          error: 'load failed: no space left on device',
+          at: new Date().toISOString(),
+        });
+      });
+      expect(
+        (await screen.findAllByText(/Load failed: load failed: no space left/)).length,
+      ).toBeGreaterThan(0);
+    });
+
+    it('Delete asks for confirmation, then DELETEs the encoded name and refreshes', async () => {
+      mockFetch({
+        '/api/versions': sampleVersions,
+        '/api/state': sampleState,
+        '/api/versions/settings': defaultSettings,
+        '/api/updates/available': noUpdates,
+        '/api/versions/archives': sampleArchives,
+        '/api/versions/archives/signalk-server-2.25.0.tar': new Response(null, { status: 204 }),
+      });
+      renderVersions();
+      const row = (await screen.findByText('signalk-server-2.25.0.tar')).closest('tr');
+      const del = within(row as HTMLElement)
+        .getAllByRole('button')
+        .find((b) => b.textContent?.trim() === 'Delete') as HTMLElement;
+      fireEvent.click(del);
+      // Confirm modal: title names the file; the OK button says Delete.
+      expect(await screen.findByText('Delete signalk-server-2.25.0.tar?')).toBeInTheDocument();
+      // The other row has a Delete button too — pick the modal's.
+      const dialog = await screen.findByRole('dialog');
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
+      await waitFor(() => {
+        expect(
+          fetchCalls.some(
+            (c) =>
+              c.method === 'DELETE' &&
+              c.path === '/api/versions/archives/signalk-server-2.25.0.tar',
+          ),
+        ).toBe(true);
+      });
+      expect(await screen.findByText('Deleted signalk-server-2.25.0.tar')).toBeInTheDocument();
+      // The listing was re-fetched after the delete.
+      expect(fetchCalls.filter((c) => c.path === '/api/versions/archives').length).toBeGreaterThan(
+        1,
+      );
+    });
+
+    it('marks the archive whose ref is the running image as current', async () => {
+      const state: CurrentState = {
+        ...sampleState,
+        signalkServer: {
+          ...sampleState.signalkServer,
+          tag: 'v2.24.0',
+          imageRepo: 'ghcr.io/dirkwa/signalk-server',
+        },
+      };
+      const archives: ArchivesResponse = {
+        dir: '/data/images',
+        archives: [
+          {
+            name: 'signalk-server-2.24.0.tar.gz',
+            size: 400_000_000,
+            mtime: '2026-08-10T12:00:00Z',
+            format: 'tgz',
+            refs: ['ghcr.io/dirkwa/signalk-server:v2.24.0'],
+            imageId: null,
+            loaded: true,
+          },
+        ],
+      };
+      mockFetch({
+        '/api/versions': sampleVersions,
+        '/api/state': state,
+        '/api/versions/settings': defaultSettings,
+        '/api/updates/available': noUpdates,
+        '/api/versions/archives': archives,
+      });
+      renderVersions();
+      const row = (await screen.findByText('signalk-server-2.24.0.tar.gz')).closest('tr');
+      await waitFor(() => {
+        expect(within(row as HTMLElement).getByText('current')).toBeInTheDocument();
+      });
+      expect(within(row as HTMLElement).getByText('In use')).toBeDisabled();
+    });
   });
 });

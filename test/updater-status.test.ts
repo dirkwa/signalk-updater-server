@@ -177,3 +177,33 @@ describe('buildUpdaterStatus', () => {
     expect(s.summary.fail).toBeGreaterThanOrEqual(1);
   });
 });
+
+describe('buildUpdaterStatus — archive-sourced signalk-server', () => {
+  it('warns about a newer local image file, naming it, instead of any registry text', () => {
+    const i = inputs();
+    i.updates.signalkServer = {
+      currentTag: '2.24.0',
+      updateAvailable: true,
+      availableArchive: 'signalk-server-2.25.0.tar',
+      imageState: 'in-sync',
+      source: 'archive',
+    };
+    const s = buildUpdaterStatus(NOW, i);
+    const r = by(s, 'update-available-signalk');
+    expect(r?.status).toBe('warn');
+    expect(r?.message).toBe(
+      'new image file: signalk-server-2.25.0.tar — load & switch from the Versions tab',
+    );
+  });
+
+  it('archive-sourced with no newer file is ok — no registry nag', () => {
+    const i = inputs();
+    i.updates.signalkServer = {
+      currentTag: '2.24.0',
+      updateAvailable: false,
+      imageState: 'in-sync',
+      source: 'archive',
+    };
+    expect(by(buildUpdaterStatus(NOW, i), 'update-available-signalk')?.status).toBe('ok');
+  });
+});

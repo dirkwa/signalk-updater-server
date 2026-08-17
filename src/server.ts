@@ -8,6 +8,7 @@ import { registerStateRoutes } from './routes/state.js';
 import { registerLifecycleRoutes } from './routes/lifecycle.js';
 import { registerVersionRoutes } from './routes/versions.js';
 import { registerSwitchRoutes } from './routes/switch.js';
+import { registerArchiveRoutes } from './routes/archives.js';
 import { registerSelfRoutes } from './routes/self.js';
 import { registerDoctorRoutes } from './routes/doctor.js';
 import { registerUpdateRoutes } from './routes/updates.js';
@@ -53,6 +54,7 @@ export async function createServer(): Promise<FastifyInstance> {
   await registerLifecycleRoutes(app);
   await registerVersionRoutes(app);
   await registerSwitchRoutes(app);
+  await registerArchiveRoutes(app);
   await registerSelfRoutes(app);
   await registerDoctorRoutes(app);
   await registerUpdateRoutes(app);

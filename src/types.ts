@@ -160,6 +160,15 @@ export interface UpdateInfo {
   currentTag: string;
   availableTag?: string;
   updateAvailable: boolean;
+  /** Where the RUNNING image came from, when the engine can tell (see
+   *  src/image-source.ts). `'archive'` = switched to from a local image
+   *  file; the update signal is then "a newer file appeared in the
+   *  folder" (`availableArchive`) and GHCR is not consulted. Absent /
+   *  `'registry'` = the Quadlet ref's own registry repo is the source. */
+  source?: ImageSourceKind;
+  /** Name of the newest local image file that is newer than the one the
+   *  running image was loaded from. Only set in `source: 'archive'` mode. */
+  availableArchive?: string;
   /** Image-level freshness, computed WITH the GHCR round-trip (so it can
    *  report 'pull-available' as well as 'restart-required'). Distinct from
    *  the semver `updateAvailable` above: this is what catches a rolling
@@ -217,6 +226,39 @@ export interface DriftReport {
   packages: DriftPackage[];
 }
 
+/** Where a running image was obtained from. Recorded per Quadlet in
+ *  /data/image-source.json by the switch flow (src/image-source.ts). */
+export type ImageSourceKind = 'registry' | 'archive';
+
+/** One image archive (`podman save` output) in the local image folder
+ *  (`~/.signalk-updater/images` on the host = `/data/images` in the engine). */
+export interface ArchiveInfo {
+  /** File name only — never a path. Validated by src/local-archives.ts. */
+  name: string;
+  /** Bytes on disk. */
+  size: number;
+  /** File mtime, ISO 8601. The "is there a newer file?" comparison key. */
+  mtime: string;
+  format: 'tar' | 'tgz';
+  /** `repo:tag` refs the archive carries (docker-archive RepoTags / OCI
+   *  ref.name annotations), or null when the archive couldn't be peeked
+   *  yet (e.g. a compressed archive before its first load). */
+  refs: string[] | null;
+  /** Image id (`sha256:…`) from a docker-archive manifest; null for OCI
+   *  archives and unpeekable files. */
+  imageId: string | null;
+  /** True when a Switch to this archive's ref would start THIS archive's
+   *  image: the ref is in podman's store and (when the archive carries an
+   *  image id) resolves to it. Then a Switch needs no registry. */
+  loaded: boolean;
+}
+
+export interface ArchivesResponse {
+  /** Folder as seen by the engine (`/data/images`). */
+  dir: string;
+  archives: ArchiveInfo[];
+}
+
 /** Persisted per-installation Versions-tab settings. Lives at
  *  ~/.signalk-updater/version-settings.json (under /data inside the
  *  container). Defaults to stable-only — beta and master rows stay
@@ -269,6 +311,7 @@ export interface LocalImagesResponse {
  *  endpoint that emits these. */
 export type SwitchStage =
   | 'idle'
+  | 'loading'
   | 'pulling'
   | 'trial'
   | 'rewriting-quadlet'

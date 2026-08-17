@@ -37,7 +37,53 @@ always returns to the exact image ref it was recorded from, even after a reposit
 Precedence: the Advanced-tab setting wins; when unset, `SIGNALK_IMAGE` (an env override on the
 engine container, meant for dev/CI) is the default; when neither is set, the built-in dirkwa repo.
 The Advanced tab shows which one is in effect. Only `ghcr.io` repositories are supported — the
-engine talks to GHCR's registry API for tag listing and drift detection.
+engine talks to GHCR's registry API for tag listing and drift detection. For boats without internet
+see [Offline updates from local image files](#offline-updates-from-local-image-files).
+
+## Offline updates from local image files
+
+Boats are often offline. Instead of pulling from GHCR, you can bring an image as a file:
+
+1. On a machine with internet, save the image you want (any tag from the Versions tab):
+
+   ```bash
+   podman pull ghcr.io/dirkwa/signalk-server:<tag>
+   podman save ghcr.io/dirkwa/signalk-server:<tag> -o signalk-server-<tag>.tar
+   # or compressed:
+   podman save ghcr.io/dirkwa/signalk-server:<tag> | gzip > signalk-server-<tag>.tar.gz
+   ```
+
+2. Copy the file (scp, SFTP, file manager, USB stick) into **`~/.signalk-updater/images`** on the
+   boat (that is `/data/images` inside the engine container; the folder is created on first use).
+   `.tar`, `.tar.gz` and `.tgz` are recognised, docker- and OCI-archive alike. File names must be
+   plain (`letters, digits, . _ -`, no spaces or slashes, e.g. `signalk-server-2.24.0.tar.gz`);
+   anything else in the folder is ignored.
+
+3. In the Updater Console, open **Versions → Local image files**. The file shows up with the
+   `repo:tag` it carries (read straight from the archive's manifest, no unpacking). **Load** imports
+   it into the local image store (`podman load` through the engine); **Switch** then runs the normal
+   switch flow — trial run, Quadlet rewrite, restart, health poll, rollback on failure — with the pull
+   step replaced by a local-store check. No registry is contacted at any point. **Delete** removes the
+   file (a loaded image stays in the store; the existing keep-window prune handles old images).
+
+The Advanced tab shows the folder and these instructions. There is no browser upload (yet) — copy the
+file onto the boat by any other means.
+
+### What "update available" means
+
+The engine only ever alerts about the source _your_ signalk-server actually comes from:
+
+| Running from…                                      | "Update available" means…                                                               |
+| -------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| the default repo (`ghcr.io/dirkwa/signalk-server`) | its tag moved on GHCR (or a newer image is pulled but not restarted)                    |
+| your own repo (Advanced tab)                       | the tag moved on **your** repo — dirkwa's repo is never consulted                       |
+| a local image file                                 | a **newer file** appeared in `~/.signalk-updater/images` — GHCR is not consulted at all |
+
+The engine remembers where the running image came from (`~/.signalk-updater/image-source.json`,
+written by every switch and matched against the Quadlet's live `Image=`); if the Quadlet is edited by
+hand the record no longer matches and the registry rules apply. The signalk-updater plugin republishes
+these as `notifications.updater.update-available-signalk` (`new image file: <name> — …` in the
+local-file case).
 
 ## Local dev
 

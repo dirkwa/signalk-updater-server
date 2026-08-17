@@ -96,6 +96,7 @@ describe.skipIf(!existsSync(DIST))('e2e: image repo setting through the built en
         QUADLET_DIR: quadlets,
         DOCTOR_DATA: join(dir, 'doctor-data'),
         WEBAPP_ROOT: join(process.cwd(), 'public'),
+        LOCAL_IMAGES_DIR: join(dir, 'images'),
         LOG_LEVEL: 'warn',
         // Make sure the env default doesn't leak into the assertions.
         SIGNALK_IMAGE: '',
@@ -214,6 +215,88 @@ describe.skipIf(!existsSync(DIST))('e2e: image repo setting through the built en
     expect(onDisk.imageRepo).toBeNull();
   });
 
+  it('lists local image files from the folder (peeked, not loaded) and validates names', async () => {
+    // A docker-archive with only manifest.json — enough for the peek. No
+    // podman load happens here (that path is covered by unit tests).
+    const cfgHex = 'd'.repeat(64);
+    const manifest = Buffer.from(
+      JSON.stringify([
+        { Config: `blobs/sha256/${cfgHex}`, RepoTags: ['ghcr.io/dirkwa/signalk-server:9.9.9-e2e'] },
+      ]),
+    );
+    const hdr = Buffer.alloc(512);
+    hdr.write('manifest.json', 0, 100);
+    hdr.write('0000644\0', 100);
+    hdr.write('0000000\0', 108);
+    hdr.write('0000000\0', 116);
+    hdr.write(manifest.length.toString(8).padStart(11, '0') + '\0', 124);
+    hdr.write('00000000000\0', 136);
+    hdr.write('        ', 148);
+    hdr.write('0', 156);
+    hdr.write('ustar\0', 257);
+    hdr.write('00', 263);
+    let sum = 0;
+    for (const b of hdr) sum += b;
+    hdr.write(sum.toString(8).padStart(6, '0') + '\0 ', 148);
+    const padded = Buffer.concat([manifest, Buffer.alloc(512 - (manifest.length % 512 || 512))]);
+    const tar = Buffer.concat([hdr, padded, Buffer.alloc(1024)]);
+    mkdirSync(join(dir, 'images'), { recursive: true });
+    writeFileSync(join(dir, 'images', 'sk-e2e.tar'), tar);
+    writeFileSync(join(dir, 'images', 'README.txt'), 'not an archive');
+
+    const r = await fetch(`${base}/api/versions/archives`);
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as {
+      dir: string;
+      archives: Array<{
+        name: string;
+        refs: string[] | null;
+        imageId: string | null;
+        loaded: boolean;
+        format: string;
+      }>;
+    };
+    expect(body.dir).toBe(join(dir, 'images'));
+    expect(body.archives.map((a) => a.name)).toEqual(['sk-e2e.tar']);
+    expect(body.archives[0]).toMatchObject({
+      format: 'tar',
+      refs: ['ghcr.io/dirkwa/signalk-server:9.9.9-e2e'],
+      imageId: `sha256:${cfgHex}`,
+      loaded: false,
+    });
+
+    // Name validation on the mutating routes — never a path.
+    const bad = await fetch(`${base}/api/versions/archives/load`, {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ name: '../sk-e2e.tar' }),
+    });
+    expect(bad.status).toBe(400);
+    const notLoaded = await fetch(`${base}/api/versions/archives/switch`, {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ name: 'sk-e2e.tar' }),
+    });
+    expect(notLoaded.status).toBe(409);
+    expect(((await notLoaded.json()) as { error: string }).error).toMatch(
+      /load the archive first/i,
+    );
+
+    // Delete works and is bearer-gated.
+    const noAuth = await fetch(`${base}/api/versions/archives/sk-e2e.tar`, { method: 'DELETE' });
+    expect(noAuth.status).toBe(401);
+    const del = await fetch(`${base}/api/versions/archives/sk-e2e.tar`, {
+      method: 'DELETE',
+      // No content-type: Fastify 400s a JSON content-type with an empty body.
+      headers: { authorization: auth.authorization },
+    });
+    expect(del.status).toBe(204);
+    const after = (await (await fetch(`${base}/api/versions/archives`)).json()) as {
+      archives: unknown[];
+    };
+    expect(after.archives).toEqual([]);
+  });
+
   it('serves a webapp bundle that carries the Advanced tab', async () => {
     const html = await (await fetch(`${base}/`)).text();
     const scripts = [...html.matchAll(/src="\.?\/?(assets\/[^"]+\.js)"/g)].map((m) => m[1]);
@@ -221,7 +304,11 @@ describe.skipIf(!existsSync(DIST))('e2e: image repo setting through the built en
     let found = false;
     for (const s of scripts) {
       const js = await (await fetch(`${base}/${s}`)).text();
-      if (js.includes('Advanced') && js.includes('/api/versions/settings')) {
+      if (
+        js.includes('Advanced') &&
+        js.includes('/api/versions/settings') &&
+        js.includes('/api/versions/archives')
+      ) {
         found = true;
         break;
       }

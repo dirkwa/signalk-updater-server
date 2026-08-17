@@ -22,6 +22,8 @@ import { mergeImageState } from '../image-state';
 import { changelogLinkFor, dirkwaDetails, shortSha } from '../changelog-links';
 import type {
   AnnotatedTag,
+  ArchiveInfo,
+  ArchivesResponse,
   AvailableUpdates,
   Channel,
   CurrentState,
@@ -51,6 +53,7 @@ function channelDescription(channel: Channel, imageRepo: string | undefined): st
 
 const STAGE_LABELS: Record<SwitchProgressEvent['stage'], string> = {
   idle: 'Idle',
+  loading: 'Loading image file',
   pulling: 'Pulling image',
   trial: 'Trial run',
   'rewriting-quadlet': 'Rewriting Quadlet',
@@ -67,6 +70,7 @@ const STAGE_LABELS: Record<SwitchProgressEvent['stage'], string> = {
 // long-tail outlier (~10s of MB over LTE) so it dominates the curve.
 const STAGE_PROGRESS: Record<SwitchProgressEvent['stage'], number> = {
   idle: 0,
+  loading: 25,
   pulling: 25,
   trial: 50,
   'rewriting-quadlet': 60,
@@ -79,6 +83,7 @@ const STAGE_PROGRESS: Record<SwitchProgressEvent['stage'], number> = {
 };
 
 const ACTIVE_STAGES: ReadonlySet<SwitchProgressEvent['stage']> = new Set([
+  'loading',
   'pulling',
   'trial',
   'rewriting-quadlet',
@@ -89,6 +94,7 @@ const ACTIVE_STAGES: ReadonlySet<SwitchProgressEvent['stage']> = new Set([
 ]);
 
 const MAX_VISIBLE_PER_CHANNEL = 25;
+const LOAD_SAFETY_MS = 15 * 60 * 1000;
 
 function shortDigest(digest: string): string {
   const hex = digest.includes(':') ? digest.slice(digest.indexOf(':') + 1) : digest;
@@ -156,6 +162,10 @@ export function Versions() {
   const settings = useApi<VersionSettingsResponse>((signal) =>
     api('/api/versions/settings', { signal }),
   );
+  // Local image files (`~/.signalk-updater/images`). Its own endpoint, so
+  // the card works when GHCR is unreachable — offline is the point.
+  const archives = useApi<ArchivesResponse>((signal) => api('/api/versions/archives', { signal }));
+  const [loadingName, setLoadingName] = useState<string | null>(null);
   // Image-level freshness for signalk-server's movable tag (`:dirkwa`,
   // `:master`, `:latest`). For these tags the semver never moves between
   // builds, so a digest-derived imageState is the only honest "is the
@@ -183,6 +193,25 @@ export function Versions() {
   // So the SSE handler can clear the in-flight Pull spinner on the
   // terminal event (a background pull streams over the same channel).
   const pullingTagRef = useRef<string | null>(null);
+  const archivesRef = useRef(archives);
+  archivesRef.current = archives;
+  // Same for an archive load kicked off from this tab.
+  const loadingNameRef = useRef<string | null>(null);
+  // Bounded recovery when the SSE terminal event for a load never arrives
+  // (stream dropped, tab suspended, engine restarted mid-load): armed on
+  // Load, disarmed by the terminal event. Without it the card stays busy
+  // until a page reload AND the stale ref would swallow the NEXT terminal
+  // event (a later switch would toast "Loaded …"). Same pattern as the
+  // Dashboard's doctor-update safety timer. 15 min covers a multi-GB load
+  // from a slow SD card with slack.
+  const loadSafetyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const disarmLoadSafety = useCallback((): void => {
+    if (loadSafetyTimer.current !== null) {
+      clearTimeout(loadSafetyTimer.current);
+      loadSafetyTimer.current = null;
+    }
+  }, []);
+  useEffect(() => () => disarmLoadSafety(), [disarmLoadSafety]);
   // True when a switch was kicked off from THIS tab, so the SSE handler
   // toasts its terminal outcome (the 202 response no longer carries it).
   const switchInitiatedRef = useRef(false);
@@ -215,11 +244,26 @@ export function Versions() {
           void versionsRef.current.refresh();
           void stateRef.current.refresh();
           void updatesRef.current.refresh();
-          // A background pull streams over this same channel. If one was in
-          // flight from this tab, clear its spinner and report the outcome
-          // (the POST returned 202 immediately, so the result only arrives
-          // here, never on the request promise).
-          if (pullingTagRef.current !== null) {
+          void archivesRef.current.refresh();
+          // A background archive load streams over this channel too.
+          if (loadingNameRef.current !== null) {
+            const name = loadingNameRef.current;
+            loadingNameRef.current = null;
+            setLoadingName(null);
+            if (loadSafetyTimer.current !== null) {
+              clearTimeout(loadSafetyTimer.current);
+              loadSafetyTimer.current = null;
+            }
+            if (parsed.stage === 'complete') {
+              toastRef.current.show(parsed.message ?? `Loaded ${name}`, 'ok');
+            } else {
+              toastRef.current.show(`Load failed: ${parsed.error ?? 'unknown error'}`, 'err', 8000);
+            }
+          } else if (pullingTagRef.current !== null) {
+            // A background pull streams over this same channel. If one was in
+            // flight from this tab, clear its spinner and report the outcome
+            // (the POST returned 202 immediately, so the result only arrives
+            // here, never on the request promise).
             const tag = pullingTagRef.current;
             pullingTagRef.current = null;
             setPullingTag(null);
@@ -346,6 +390,95 @@ export function Versions() {
     [confirm, toast],
   );
 
+  const doLoadArchive = useCallback(
+    async (name: string): Promise<void> => {
+      setLoadingName(name);
+      loadingNameRef.current = name;
+      disarmLoadSafety();
+      loadSafetyTimer.current = setTimeout(() => {
+        loadSafetyTimer.current = null;
+        if (loadingNameRef.current === name) {
+          loadingNameRef.current = null;
+          setLoadingName(null);
+          toastRef.current.show(
+            `No completion reported for ${name} — refresh to see whether it loaded.`,
+            'err',
+            8000,
+          );
+          void archivesRef.current.refresh();
+        }
+      }, LOAD_SAFETY_MS);
+      try {
+        // 202 + SSE, same as pre-pull: outcome arrives on the stream.
+        await api('/api/versions/archives/load', { method: 'POST', body: { name } });
+      } catch (err) {
+        disarmLoadSafety();
+        loadingNameRef.current = null;
+        setLoadingName(null);
+        toast.show(
+          `Could not start load: ${err instanceof Error ? err.message : String(err)}`,
+          'err',
+          8000,
+        );
+      }
+    },
+    [disarmLoadSafety, toast],
+  );
+
+  const doSwitchArchive = useCallback(
+    async (a: ArchiveInfo): Promise<void> => {
+      // Name the FILE, not a ref: a multi-tag archive's actual target ref is
+      // picked server-side (repo-preferred, else first) and echoed in the
+      // 202 / SSE events.
+      const r = await confirm.ask({
+        title: `Switch to the image in ${a.name}?`,
+        body: 'signalk-server will be stopped and restarted on the image loaded from this file. No registry is contacted. A pre-switch backup runs if signalk-backup is installed. Estimated downtime: 30–90s.',
+        okLabel: 'Switch',
+        showSkipBackup: true,
+      });
+      if (!r.confirmed) return;
+      try {
+        switchInitiatedRef.current = true;
+        toast.show(`Switching to the image in ${a.name}… (progress below)`, 'info');
+        await api('/api/versions/archives/switch', {
+          method: 'POST',
+          body: { name: a.name, skipBackup: r.skipBackup },
+        });
+      } catch (err) {
+        switchInitiatedRef.current = false;
+        toast.show(
+          `Could not start switch: ${err instanceof Error ? err.message : String(err)}`,
+          'err',
+          8000,
+        );
+      }
+    },
+    [confirm, toast],
+  );
+
+  const doDeleteArchive = useCallback(
+    async (name: string): Promise<void> => {
+      const r = await confirm.ask({
+        title: `Delete ${name}?`,
+        body: 'Removes the file from the image folder. An image already loaded from it stays in the local store.',
+        okLabel: 'Delete',
+      });
+      if (!r.confirmed) return;
+      try {
+        await api(`/api/versions/archives/${encodeURIComponent(name)}`, { method: 'DELETE' });
+        toast.show(`Deleted ${name}`, 'ok');
+        await archives.refresh();
+      } catch (err) {
+        toast.show(
+          `Could not delete: ${err instanceof Error ? err.message : String(err)}`,
+          'err',
+          8000,
+        );
+      }
+    },
+    [archives, confirm, toast],
+  );
+
   // Repo the Quadlet currently points at vs. the repo we're listing (the
   // Advanced-tab setting). When they differ, a same-named tag in the new
   // repo is NOT the running image — suppress the "current" badge and say
@@ -440,7 +573,173 @@ export function Versions() {
             );
           })
         : null}
+
+      <LocalFilesCard
+        data={archives.data}
+        error={archives.error}
+        loading={archives.loading}
+        loadingName={loadingName}
+        switchInFlight={switchInFlight}
+        currentRef={
+          state.data?.signalkServer.imageRepo && state.data.signalkServer.tag
+            ? `${state.data.signalkServer.imageRepo}:${state.data.signalkServer.tag}`
+            : null
+        }
+        onLoad={doLoadArchive}
+        onSwitch={doSwitchArchive}
+        onDelete={doDeleteArchive}
+        onRefresh={() => void archives.refresh()}
+      />
     </>
+  );
+}
+
+function fmtBytes(n: number): string {
+  if (n >= 1024 * 1024 * 1024) return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  if (n >= 1024 * 1024) return `${Math.round(n / (1024 * 1024))} MB`;
+  return `${Math.round(n / 1024)} kB`;
+}
+
+interface LocalFilesCardProps {
+  data: ArchivesResponse | null;
+  error: string | null;
+  loading: boolean;
+  loadingName: string | null;
+  switchInFlight: boolean;
+  /** `repo:tag` the Quadlet currently points at, for the "current" pill. */
+  currentRef: string | null;
+  onLoad: (name: string) => void;
+  onSwitch: (a: ArchiveInfo) => void;
+  onDelete: (name: string) => void;
+  onRefresh: () => void;
+}
+
+/**
+ * Local image files (`podman save` archives in `~/.signalk-updater/images`).
+ * Independent of the GHCR listing so it renders offline. Load = `podman
+ * load` through the engine; Switch = the normal switch flow minus the pull.
+ */
+function LocalFilesCard({
+  data,
+  error,
+  loading,
+  loadingName,
+  switchInFlight,
+  currentRef,
+  onLoad,
+  onSwitch,
+  onDelete,
+  onRefresh,
+}: LocalFilesCardProps) {
+  const busy = loadingName !== null || switchInFlight;
+  return (
+    <Card className="mb-3">
+      <CardHeader className="d-flex justify-content-between align-items-center">
+        <div>
+          <strong>Local image files</strong>
+          <span className="text-muted small ms-2">
+            Archives from <code>podman save</code> in <code>~/.signalk-updater/images</code> — load
+            and switch without internet.
+          </span>
+        </div>
+        <Button size="sm" color="secondary" outline disabled={loading} onClick={onRefresh}>
+          Refresh
+        </Button>
+      </CardHeader>
+      <CardBody>
+        {error !== null ? (
+          <Alert color="warning" className={data ? 'mb-3' : 'mb-0'}>
+            Could not read the image folder ({error}).
+          </Alert>
+        ) : null}
+        {loading && !data ? <Spinner size="sm" /> : null}
+        {data && data.archives.length === 0 ? (
+          <div className="text-muted small">
+            No image files yet. On a machine with internet run{' '}
+            <code>podman save ghcr.io/dirkwa/signalk-server:&lt;tag&gt; -o signalk-server.tar</code>{' '}
+            (or <code>podman save … | gzip &gt; signalk-server.tar.gz</code>) and copy the file into{' '}
+            <code>~/.signalk-updater/images</code> on the boat.
+          </div>
+        ) : null}
+        {data && data.archives.length > 0 ? (
+          <Table size="sm" responsive className="mb-0 align-middle">
+            <thead>
+              <tr>
+                <th>File</th>
+                <th>Image</th>
+                <th>Size</th>
+                <th>Modified</th>
+                <th className="text-end">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.archives.map((a) => {
+                const isCurrent = currentRef !== null && (a.refs ?? []).includes(currentRef);
+                const canSwitch = a.loaded && (a.refs?.length ?? 0) > 0 && !isCurrent;
+                const isLoading = loadingName === a.name;
+                return (
+                  <tr key={a.name}>
+                    <td className="font-monospace">{a.name}</td>
+                    <td className="font-monospace small">
+                      {a.refs === null ? (
+                        <span className="text-muted">unknown until loaded</span>
+                      ) : a.refs.length === 0 ? (
+                        <span className="text-muted">no repository:tag in archive</span>
+                      ) : (
+                        a.refs.join(', ')
+                      )}{' '}
+                      {isCurrent ? <Badge color="primary">current</Badge> : null}
+                      {!isCurrent && a.loaded ? <Badge color="success">loaded</Badge> : null}
+                    </td>
+                    <td>{fmtBytes(a.size)}</td>
+                    <td title={a.mtime}>{relTime(a.mtime)}</td>
+                    <td className="text-end text-nowrap">
+                      <Button
+                        size="sm"
+                        color="secondary"
+                        outline
+                        className="me-1"
+                        disabled={busy}
+                        onClick={() => onLoad(a.name)}
+                        title="podman load this file into the local image store"
+                      >
+                        {isLoading ? <Spinner size="sm" className="me-1" /> : null}
+                        {a.loaded ? 'Reload' : 'Load'}
+                      </Button>
+                      <Button
+                        size="sm"
+                        color="primary"
+                        className="me-1"
+                        disabled={busy || !canSwitch}
+                        onClick={() => onSwitch(a)}
+                        title={
+                          !a.loaded
+                            ? 'Load the file first'
+                            : (a.refs?.length ?? 0) === 0
+                              ? 'Archive carries no repository:tag'
+                              : undefined
+                        }
+                      >
+                        {isCurrent ? 'In use' : 'Switch'}
+                      </Button>
+                      <Button
+                        size="sm"
+                        color="danger"
+                        outline
+                        disabled={busy}
+                        onClick={() => onDelete(a.name)}
+                      >
+                        Delete
+                      </Button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </Table>
+        ) : null}
+      </CardBody>
+    </Card>
   );
 }
 

@@ -122,6 +122,30 @@ export interface UpdateInfo {
    *  'pull-available' in addition to 'restart-required'). Mirrors
    *  src/types.ts. Optional; absent is treated as 'unknown'. */
   imageState?: ImageState;
+  /** Where the running image came from (mirrors src/types.ts). 'archive'
+   *  = loaded from a local image file; then `availableArchive` (not GHCR)
+   *  is the update signal. */
+  source?: ImageSourceKind;
+  /** Newest local image file newer than the one in use (source 'archive'). */
+  availableArchive?: string;
+}
+
+export type ImageSourceKind = 'registry' | 'archive';
+
+/** Mirror of src/types.ts `ArchiveInfo` — one file in the local image folder. */
+export interface ArchiveInfo {
+  name: string;
+  size: number;
+  mtime: string;
+  format: 'tar' | 'tgz';
+  refs: string[] | null;
+  imageId: string | null;
+  loaded: boolean;
+}
+
+export interface ArchivesResponse {
+  dir: string;
+  archives: ArchiveInfo[];
 }
 
 // Mirror of the server-side AvailableUpdates type — the daily GHCR
@@ -231,6 +255,7 @@ export interface LocalImagesResponse {
 
 export type SwitchStage =
   | 'idle'
+  | 'loading'
   | 'pulling'
   | 'trial'
   | 'rewriting-quadlet'
