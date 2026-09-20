@@ -67,7 +67,7 @@ Save the cr output to a repo-local file (the repo `.gitignore`s `cr-review*.txt`
 
 release-please owns the release. Merging a releasable commit to master opens a `chore: release X.Y.Z` PR that bumps `package.json`; merging that creates the tag and the GitHub Release, then dispatches `publish-image.yml` on the tag.
 
-That workflow builds a multi-arch image on native runners (`ubuntu-24.04` for amd64, `ubuntu-24.04-arm` for arm64 — no QEMU) and pushes to `ghcr.io/dirkwa/signalk-updater-server:X.Y.Z` plus moving tags (`:X.Y`, `:X`, `:latest` for stable, `:beta` for prereleases). The package is `private`, so the image is the release artifact — nothing goes to npm.
+That workflow builds a multi-arch image on native runners (`ubuntu-24.04` for amd64, `ubuntu-24.04-arm` for arm64 — no QEMU) and pushes to `ghcr.io/dirkwa/signalk-updater-server:X.Y.Z` plus moving tags: `:X.Y`, `:X` and `:latest` for a stable version, and `:beta` for a `-beta.`/`-rc.` one. A pre-release carrying any other identifier gets its exact version tag and no moving tag, so it can never claim `:latest` or `:beta`. The package is `private`, so the image is the release artifact — nothing goes to npm.
 
 Merging the release PR is what publishes the image, so it needs explicit approval like any other publish. `versioning: always-bump-patch` makes every release a PATCH; for a minor or major, put a `Release-As: X.Y.Z` footer on a commit.
 

@@ -6,6 +6,15 @@ on:
 
 permissions: {}
 
+# One release-please run at a time: two runs started by pushes landing close
+# together would each read the release pull request's state and each write it,
+# and the later write could undo the earlier one. Queued rather than cancelled
+# — a run that is already creating a tag or dispatching the image build must
+# be allowed to finish.
+concurrency:
+  group: release-please-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   # GitHub's release notes are never empty, so release-please would propose
   # a release after every merge, a docs or ci change included. Only a push
