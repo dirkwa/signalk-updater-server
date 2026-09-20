@@ -6,7 +6,7 @@ Bug reports, feature requests and pull requests are welcome at
 Before opening a pull request, run the full local chain:
 
 ```bash
-npm run format && npm run build:all
+npm run format && npm run build:all && npm run ci-lint
 ```
 
 ## Contributor license grant

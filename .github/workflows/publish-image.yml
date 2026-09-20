@@ -22,25 +22,36 @@ env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/signalk-updater-server
 
 jobs:
+  # release-please creates the GitHub Release for a real version, so only a
+  # hand-pushed pre-release tag needs one made here; running for every tag
+  # would collide with the Release that already exists. A stable tag has no
+  # `-`, which is also what the tag globs above distinguish.
   release:
+    if: ${{ contains(github.ref_name, '-') }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
+      # Always true: the job's own condition already limits it to tags
+      # carrying a pre-release part, so an identifier other than -beta./-rc.
+      # cannot be published here as a full release.
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
           generate_release_notes: true
-          prerelease: ${{ contains(github.ref_name, '-beta.') || contains(github.ref_name, '-rc.') }}
+          prerelease: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   build:
-    needs: release
+    # No `needs: release`: that job is pre-release-only now, and a real
+    # release must still build and push its image when it is skipped. Both
+    # this job and merge read github.ref_name directly, so neither depends
+    # on anything release produces.
     strategy:
       fail-fast: false
       matrix:
@@ -122,12 +133,19 @@ jobs:
           set -euo pipefail
           v="${REF_NAME#v}"
           tags=("${{ env.IMAGE }}:$v")
-          if [[ "$v" == *-beta.* || "$v" == *-rc.* ]]; then
-            tags+=("${{ env.IMAGE }}:beta")
+          # Any pre-release part disqualifies a tag from the moving tags.
+          # Testing only -beta./-rc. here sent an unlisted identifier such as
+          # -alpha.1 down the stable branch, where `base="${v%%-*}"` strips
+          # the pre-release and it claims :1.2, :1 and :latest — the version
+          # numbers of the stable release it precedes. :beta stays limited to
+          # the two channels that are actually published.
+          if [[ "$v" == *-* ]]; then
+            if [[ "$v" == *-beta.* || "$v" == *-rc.* ]]; then
+              tags+=("${{ env.IMAGE }}:beta")
+            fi
           else
-            base="${v%%-*}"
-            major="${base%%.*}"
-            tmp="${base#*.}"
+            major="${v%%.*}"
+            tmp="${v#*.}"
             minor="${tmp%%.*}"
             tags+=("${{ env.IMAGE }}:$major.$minor" "${{ env.IMAGE }}:$major" "${{ env.IMAGE }}:latest")
           fi
