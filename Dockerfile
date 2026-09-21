@@ -23,7 +23,12 @@ RUN npm install --include=dev --no-audit --no-fund --loglevel=warn
 COPY tsconfig.json tsconfig.webapp.json vite.config.ts ./
 COPY src ./src
 COPY webapp ./webapp
-RUN npx tsc -p tsconfig.json && npx vite build
+# Same three steps as `npm run build`, in the same order: the webapp
+# typecheck sits between the server compile and the bundle, so a type error
+# in webapp/ fails the image build rather than shipping in it. vite does not
+# check types, and tsconfig.webapp.json is noEmit, so neither step covers the
+# other.
+RUN npx tsc -p tsconfig.json && npx tsc -p tsconfig.webapp.json && npx vite build
 
 FROM node:24-trixie-slim AS deps
 WORKDIR /app
