@@ -13,8 +13,9 @@
     "node": ">=24"
   },
   "scripts": {
-    "build": "npm run build:plugin && npm run build:webapp",
+    "build": "npm run build:plugin && npm run typecheck:webapp && npm run build:webapp",
     "build:plugin": "rimraf dist && tsc -p tsconfig.json",
+    "typecheck:webapp": "tsc -p tsconfig.webapp.json",
     "build:webapp": "rimraf public && vite build",
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
