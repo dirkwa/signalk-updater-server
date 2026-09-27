@@ -25,9 +25,10 @@ jobs:
   # release-please creates the GitHub Release for a real version, so only a
   # hand-pushed pre-release tag needs one made here; running for every tag
   # would collide with the Release that already exists. A stable tag has no
-  # `-`, which is also what the tag globs above distinguish.
+  # `-`, which is also what the tag globs above distinguish. The ref check
+  # keeps a manual run on a branch from making a Release named after it.
   release:
-    if: ${{ contains(github.ref_name, '-') }}
+    if: ${{ startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-') }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -51,7 +52,10 @@ jobs:
     # No `needs: release`: that job is pre-release-only now, and a real
     # release must still build and push its image when it is skipped. Both
     # this job and merge read github.ref_name directly, so neither depends
-    # on anything release produces.
+    # on anything release produces. The image is tagged from that ref, so a
+    # manual run on a branch builds nothing; merge needs this job and is
+    # skipped with it.
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
     strategy:
       fail-fast: false
       matrix:

@@ -82,12 +82,12 @@ jobs:
       - uses: googleapis/release-please-action@v5
         id: rp
 
-  # The tag release-please just pushed does not start publish.yml by itself:
-  # an event raised with GITHUB_TOKEN starts no workflow, with
-  # workflow_dispatch as the exception. So publish.yml is dispatched on the
-  # tag — it has to stay the file that publishes, since npm's trusted
-  # publishing is bound to that workflow file. Its own job, so that the
-  # right to start workflows is held by nothing but this one command.
+  # The tag release-please just pushed does not start publish-image.yml by
+  # itself: an event raised with GITHUB_TOKEN starts no workflow, with
+  # workflow_dispatch as the exception. So publish-image.yml is dispatched on
+  # the tag, where github.ref_name is the version it builds and tags the
+  # image as. Its own job, so that the right to start workflows is held by
+  # nothing but this one command.
   publish:
     needs: release-please
     if: ${{ needs.release-please.outputs.releases_created == 'true' }}
@@ -97,4 +97,4 @@ jobs:
     steps:
       - env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow run publish.yml --repo "$GITHUB_REPOSITORY" --ref "${{ needs.release-please.outputs.tag_name }}"
+        run: gh workflow run publish-image.yml --repo "$GITHUB_REPOSITORY" --ref "${{ needs.release-please.outputs.tag_name }}"
