@@ -47,7 +47,7 @@
     "eslint": "^10.0.0",
     "globals": "^17.0.0",
     "jsdom": "^30.0.0",
-    "prettier": "3.9.8",
+    "prettier": "3.9.9",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "reactstrap": "^9.2.3",
