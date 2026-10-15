@@ -4,9 +4,13 @@ import { dirname, join } from 'node:path';
 import { pollHealth } from '../container-ops.js';
 import {
   applyToHardware,
+  carriedHardwareLines,
+  hasSerialDevicesBlock,
   readHardware,
   renderHardwareBlock,
+  renderSerialDevicesBlock,
   spliceHardwareBlock,
+  spliceSerialDevicesBlock,
   writeHardware,
   type HardwareApplyRequest,
 } from '../hardware.js';
@@ -56,12 +60,21 @@ export async function registerHardwareRoutes(app: FastifyInstance): Promise<void
           const next = applyToHardware(current, req.body ?? {});
           await writeHardware(next);
 
-          // Rewrite the server Quadlet with the new HARDWARE block.
+          // Rewrite the server Quadlet with the new HARDWARE block, and the
+          // SERIAL DEVICES block when the Quadlet has one. Lines of the
+          // HARDWARE block that come from host-side probes are carried over.
           const quadletPath = join(QUADLET_DIR, SERVER_QUADLET);
           const original = (await readFile(quadletPath, 'utf8')).toString();
           await snapshotQuadlet(SERVER_QUADLET);
-          const block = renderHardwareBlock(next);
-          const rewritten = spliceHardwareBlock(original, block);
+          const serialInService = hasSerialDevicesBlock(original);
+          const block = renderHardwareBlock(next, {
+            serialInService,
+            carried: carriedHardwareLines(original),
+          });
+          let rewritten = spliceHardwareBlock(original, block);
+          if (serialInService) {
+            rewritten = spliceSerialDevicesBlock(rewritten, renderSerialDevicesBlock(next));
+          }
           await writeAtomic(quadletPath, rewritten);
           await pruneSnapshots(SERVER_QUADLET);
 
