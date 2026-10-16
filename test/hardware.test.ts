@@ -4,8 +4,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   applyToHardware,
+  carriedHardwareLines,
+  hasSerialDevicesBlock,
   renderHardwareBlock,
+  renderSerialDevicesBlock,
   spliceHardwareBlock,
+  spliceSerialDevicesBlock,
   type HardwareJson,
 } from '../src/hardware.js';
 
@@ -76,6 +80,70 @@ describe('renderHardwareBlock', () => {
   });
 });
 
+describe('renderHardwareBlock and the SERIAL DEVICES block (installer#309)', () => {
+  const HW: HardwareJson = {
+    ...SAMPLE_HW,
+    can: [{ interface: 'can0', type: 'socketcan', enabled: true }],
+    onboardSerial: [
+      { device: '/dev/ttyAMA4', label: 'HALPI2 RS-485', enabled: true },
+      { device: '/dev/ttyAMA5', label: 'off', enabled: false },
+    ],
+  };
+
+  it('emits no AddDevice for serial devices when the Quadlet has the block', () => {
+    const block = renderHardwareBlock(HW, { serialInService: true });
+    expect(block).not.toContain('AddDevice=');
+  });
+
+  it('emits no line for an enabled CAN interface', () => {
+    // /dev/can0 does not exist: podman fails every start on it (exit 125).
+    expect(renderHardwareBlock(HW, { serialInService: true })).not.toContain('can0');
+    expect(renderHardwareBlock(HW)).not.toContain('can0');
+  });
+
+  it('emits both forms per by-id path and one per onboard UART without the block', () => {
+    const lines = renderHardwareBlock(HW).split('\n');
+    const id = '/dev/serial/by-id/usb-FTDI_AB_002';
+    expect(lines).toContain(`AddDevice=${id}:${id}`);
+    expect(lines).toContain(`AddDevice=${id}`);
+    expect(lines.filter((l) => l.includes('/dev/ttyAMA4'))).toEqual(['AddDevice=/dev/ttyAMA4']);
+    expect(lines.join('\n')).not.toContain('ttyAMA5');
+  });
+
+  it('appends carried lines after the lines it renders', () => {
+    const hw = { ...HW, gpio: { platform: 'rpi5', enabled: true } };
+    const block = renderHardwareBlock(hw, {
+      serialInService: true,
+      carried: ['Volume=/dev/snd:/dev/snd:ro'],
+    });
+    expect(block.split('\n')).toEqual([
+      'Volume=/dev/gpiomem:/dev/gpiomem',
+      'Volume=/dev/snd:/dev/snd:ro',
+    ]);
+  });
+
+  it('lists enabled serial, then onboardSerial devices, in renderSerialDevicesBlock', () => {
+    expect(renderSerialDevicesBlock(HW)).toBe(
+      'Environment="SIGNALK_SERIAL_DEVICES=/dev/serial/by-id/usb-FTDI_AB_002 /dev/ttyAMA4"',
+    );
+  });
+
+  it('names a path with a space in a comment instead of listing it', () => {
+    const hw: HardwareJson = {
+      ...SAMPLE_HW,
+      serial: [{ byId: '/dev/serial/by-id/usb-ODD ADAPTER-if00', enabled: true }],
+    };
+    expect(renderSerialDevicesBlock(hw)).toBe(
+      '# serial device not passed (unsupported characters): /dev/serial/by-id/usb-ODD ADAPTER-if00',
+    );
+  });
+
+  it('renders an empty SERIAL DEVICES block when nothing is enabled', () => {
+    const hw: HardwareJson = { ...SAMPLE_HW, serial: [] };
+    expect(renderSerialDevicesBlock(hw)).toBe('');
+  });
+});
+
 const SAMPLE_QUADLET = `[Container]
 Image=ghcr.io/dirkwa/signalk-server:latest
 ContainerName=signalk-server
@@ -102,6 +170,103 @@ describe('spliceHardwareBlock', () => {
     expect(out).toContain('# === BEGIN HARDWARE');
     expect(out).toContain('AddDevice=/dev/x');
     expect(out).toContain('# === END HARDWARE');
+  });
+});
+
+const INSTALLER_QUADLET = `[Container]
+Image=ghcr.io/dirkwa/signalk-server:dirkwa
+
+# === BEGIN HARDWARE (managed by signalk-universal-installer) ===
+AddDevice=/dev/can0
+Volume=signalk-dbus-socket:/run/dbus:rw
+Volume=/dev/snd:/dev/snd:ro
+# /dev/input view SKIPPED: this user is in the host 'input' group.
+Volume=/run/avahi-daemon/socket:/run/avahi-daemon/socket:ro
+
+# === END HARDWARE ===
+
+PodmanArgs=$SIGNALK_DEVICE_ARGS
+
+[Service]
+# === BEGIN SERIAL DEVICES (managed by signalk-universal-installer) ===
+Environment="SIGNALK_SERIAL_DEVICES=/dev/serial/by-id/usb-OLD"
+# === END SERIAL DEVICES ===
+EnvironmentFile=-%t/signalk-server-devices.env
+`;
+
+describe('Quadlet blocks from the installer template', () => {
+  it('carries the probe-derived HARDWARE lines and drops the ones rendered here', () => {
+    expect(carriedHardwareLines(INSTALLER_QUADLET)).toEqual([
+      'Volume=/dev/snd:/dev/snd:ro',
+      "# /dev/input view SKIPPED: this user is in the host 'input' group.",
+      'Volume=/run/avahi-daemon/socket:/run/avahi-daemon/socket:ro',
+    ]);
+  });
+
+  it('drops a direct /run/dbus mount from an older installer instead of carrying it', () => {
+    const old = INSTALLER_QUADLET.replace(
+      'Volume=signalk-dbus-socket:/run/dbus:rw',
+      'Volume=/run/dbus:/run/dbus:ro',
+    );
+    expect(carriedHardwareLines(old).join('\n')).not.toContain('/run/dbus');
+  });
+
+  it('detects the SERIAL DEVICES block', () => {
+    expect(hasSerialDevicesBlock(INSTALLER_QUADLET)).toBe(true);
+    expect(hasSerialDevicesBlock(SAMPLE_QUADLET)).toBe(false);
+  });
+
+  it('replaces the SERIAL DEVICES content and keeps the rest', () => {
+    const out = spliceSerialDevicesBlock(
+      INSTALLER_QUADLET,
+      'Environment="SIGNALK_SERIAL_DEVICES=/dev/serial/by-id/usb-NEW"',
+    );
+    expect(out).toContain('SIGNALK_SERIAL_DEVICES=/dev/serial/by-id/usb-NEW');
+    expect(out).not.toContain('usb-OLD');
+    expect(out).toContain('EnvironmentFile=-%t/signalk-server-devices.env');
+  });
+
+  it('leaves a Quadlet without the SERIAL DEVICES block unchanged', () => {
+    expect(spliceSerialDevicesBlock(SAMPLE_QUADLET, 'Environment="X=1"')).toBe(SAMPLE_QUADLET);
+  });
+});
+
+describe('classes this file does not model', () => {
+  const extra = {
+    audio: { present: true, enabled: false },
+    input: { present: true, enabled: true },
+    board: { model: 'halpi2', candidate: false, detectedVia: 'i2c' },
+    onboardSerial: [{ device: '/dev/ttyAMA4', label: 'HALPI2 RS-485', enabled: true }],
+  };
+
+  it('survive applyToHardware', () => {
+    const next = applyToHardware({ ...SAMPLE_HW, ...extra }, { gpio: { enabled: true } });
+    expect(next.audio).toEqual(extra.audio);
+    expect(next.input).toEqual(extra.input);
+    expect(next.board).toEqual(extra.board);
+    expect(next.onboardSerial).toEqual(extra.onboardSerial);
+    expect(next.gpio.enabled).toBe(true);
+  });
+
+  it('survive readHardware', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'updater-hardware-'));
+    const path = join(dir, 'hardware.json');
+    await writeFile(path, JSON.stringify({ ...SAMPLE_HW, ...extra }), 'utf8');
+    const previous = process.env.HARDWARE_PATH;
+    process.env.HARDWARE_PATH = path;
+    try {
+      vi.resetModules();
+      const { readHardware } = await import('../src/hardware.js');
+      const hw = await readHardware();
+      expect(hw.audio).toEqual(extra.audio);
+      expect(hw.input).toEqual(extra.input);
+      expect(hw.board).toEqual(extra.board);
+      expect(hw.onboardSerial).toEqual(extra.onboardSerial);
+    } finally {
+      if (previous === undefined) delete process.env.HARDWARE_PATH;
+      else process.env.HARDWARE_PATH = previous;
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -145,6 +310,30 @@ describe('readHardware', () => {
       const { readHardware } = await import('../src/hardware.js');
       const hw = await readHardware();
       expect(hw.socketcanCandidate).toEqual(candidate);
+    } finally {
+      if (previous === undefined) delete process.env.HARDWARE_PATH;
+      else process.env.HARDWARE_PATH = previous;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns the defaults for a file that is not a JSON object', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'updater-hardware-'));
+    const path = join(dir, 'hardware.json');
+    const previous = process.env.HARDWARE_PATH;
+    process.env.HARDWARE_PATH = path;
+    try {
+      vi.resetModules();
+      const { readHardware } = await import('../src/hardware.js');
+      for (const body of ['[1]', '"ab"', 'null']) {
+        await writeFile(path, body, 'utf8');
+        expect(await readHardware()).toEqual({
+          serial: [],
+          can: [],
+          bluetooth: { dbusAvailable: false, enabled: false },
+          gpio: { platform: 'none', enabled: false },
+        });
+      }
     } finally {
       if (previous === undefined) delete process.env.HARDWARE_PATH;
       else process.env.HARDWARE_PATH = previous;

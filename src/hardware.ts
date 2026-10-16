@@ -56,6 +56,14 @@ export interface SocketCanCandidate {
   ipLinkUp: boolean;
 }
 
+// Fixed on-board UARTs a detected board provides (HALPI2: /dev/ttyAMA4,
+// RS-485), written host-side by detect-hardware.sh.
+export interface OnboardSerialDevice {
+  device: string;
+  label?: string;
+  enabled: boolean;
+}
+
 export interface HardwareJson {
   detectedAt?: string;
   serial: Omit<SerialDevice, 'kind'>[];
@@ -63,6 +71,11 @@ export interface HardwareJson {
   bluetooth: Omit<BluetoothDevice, 'kind'>;
   gpio: Omit<GpioDevice, 'kind'>;
   socketcanCandidate?: SocketCanCandidate;
+  onboardSerial?: OnboardSerialDevice[];
+  // Classes this file does not model (audio, input, board, and any the
+  // installer adds later) pass through readHardware and applyToHardware
+  // unchanged, so an apply never deletes them from hardware.json.
+  [key: string]: unknown;
 }
 
 export interface HardwareApplyRequest {
@@ -82,14 +95,19 @@ const EMPTY_HARDWARE: HardwareJson = {
 export async function readHardware(): Promise<HardwareJson> {
   try {
     const body = await readFile(HARDWARE_PATH, 'utf8');
-    const parsed = JSON.parse(body.toString()) as Partial<HardwareJson>;
+    const raw: unknown = JSON.parse(body.toString());
+    // Spread below, an array or a string would add its index keys ("0",
+    // "1", ...) to the result, and an apply would write them back.
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+      return { ...EMPTY_HARDWARE };
+    }
+    const parsed = raw as Partial<HardwareJson>;
     return {
-      detectedAt: parsed.detectedAt,
+      ...parsed,
       serial: parsed.serial ?? [],
       can: parsed.can ?? [],
       bluetooth: parsed.bluetooth ?? EMPTY_HARDWARE.bluetooth,
       gpio: parsed.gpio ?? EMPTY_HARDWARE.gpio,
-      socketcanCandidate: parsed.socketcanCandidate,
     };
   } catch {
     return { ...EMPTY_HARDWARE };
@@ -98,7 +116,7 @@ export async function readHardware(): Promise<HardwareJson> {
 
 export function applyToHardware(current: HardwareJson, req: HardwareApplyRequest): HardwareJson {
   const next: HardwareJson = {
-    detectedAt: current.detectedAt,
+    ...current,
     serial: current.serial.map((s) => {
       const override = req.serial?.find((r) => r.byId === s.byId);
       return override ? { ...s, enabled: override.enabled } : s;
@@ -133,18 +151,70 @@ export async function writeHardware(next: HardwareJson): Promise<void> {
   await fsyncDir(dirname(HARDWARE_PATH));
 }
 
+// A serial path is passed only if it is made of characters that survive the
+// unit file and the installer ExecStartPre's word split unchanged. Must match
+// serial_devices_block in signalk-universal-installer's
+// render-server-quadlet.sh, so an apply and a `signalk render-server` write
+// the same lines.
+const SAFE_DEVICE_PATH = /^\/[A-Za-z0-9._/:+@,=-]+$/;
+
+// Lines of the HARDWARE block this file renders from hardware.json. Every
+// other line in the block (the /dev/snd, /dev/input, avahi and halpid
+// Volume= lines and their comments) comes from host-side probes the
+// installer's renderer runs and this container cannot repeat, so an apply
+// carries those over from the live Quadlet instead of dropping them. A
+// direct /run/dbus mount, written for bluetooth by older installers, counts
+// as rendered here: carried next to the proxy's socket volume it would give
+// podman two mounts at /run/dbus, and it would outlive bluetooth being off.
+const RENDERED_HERE =
+  /^(AddDevice=|Volume=signalk-dbus-socket:|Volume=\/run\/dbus[:/]|Volume=\/dev\/gpiomem:)/;
+
+/** Enabled serial and onboardSerial device paths, in hardware.json order. */
+function serialDevicePaths(hw: HardwareJson): string[] {
+  return [
+    ...hw.serial.filter((s) => s.enabled && s.byId).map((s) => s.byId),
+    ...(hw.onboardSerial ?? []).filter((d) => d.enabled && d.device).map((d) => d.device),
+  ];
+}
+
+export interface RenderOptions {
+  /**
+   * True when the Quadlet has the [Service] SERIAL DEVICES block (installer
+   * templates since signalk-universal-installer#309): serial devices then go
+   * there, through renderSerialDevicesBlock, and get no AddDevice= line here.
+   */
+  serialInService?: boolean;
+  /** Lines of the live HARDWARE block not rendered here; see carriedHardwareLines. */
+  carried?: string[];
+}
+
 /**
  * Render the HARDWARE block (the `AddDevice=` / `Volume=` lines) from a
  * HardwareJson. Caller splices this between the BEGIN/END HARDWARE
  * comment markers in the Quadlet.
+ *
+ * CAN interfaces get no line: a SocketCAN interface is a network device with
+ * no /dev node, signalk-server runs with Network=host, and an
+ * AddDevice=/dev/can0 made every start fail (`stat /dev/can0: no such file or
+ * directory`, exit 125).
  */
-export function renderHardwareBlock(hw: HardwareJson): string {
+export function renderHardwareBlock(hw: HardwareJson, opts: RenderOptions = {}): string {
   const lines: string[] = [];
-  for (const s of hw.serial) {
-    if (s.enabled && s.byId) lines.push(`AddDevice=${s.byId}`);
-  }
-  for (const c of hw.can) {
-    if (c.enabled && c.interface) lines.push(`AddDevice=/dev/${c.interface}`);
+  if (!opts.serialInService) {
+    // A Quadlet from before the SERIAL DEVICES block. Same lines the
+    // installer's renderer wrote for it: a by-id path both mapped (the stable
+    // name inside the container) and bare (podman resolves it to
+    // /dev/ttyUSB0, the name existing configs use); an onboard UART once.
+    // A path that fails SAFE_DEVICE_PATH would break the line, so it is left
+    // out here too.
+    for (const path of serialDevicePaths(hw)) {
+      if (!SAFE_DEVICE_PATH.test(path)) continue;
+      if (path.startsWith('/dev/serial/by-id/')) {
+        lines.push(`AddDevice=${path}:${path}`, `AddDevice=${path}`);
+      } else {
+        lines.push(`AddDevice=${path}`);
+      }
+    }
   }
   if (hw.bluetooth.enabled && hw.bluetooth.dbusAvailable) {
     // The signalk-dbus-proxy sidecar's named socket volume, NOT a direct
@@ -161,7 +231,82 @@ export function renderHardwareBlock(hw: HardwareJson): string {
   if (hw.gpio.enabled) {
     lines.push('Volume=/dev/gpiomem:/dev/gpiomem');
   }
+  lines.push(...(opts.carried ?? []));
   return lines.join('\n');
+}
+
+/**
+ * The [Service] SERIAL DEVICES block: one
+ * `Environment="SIGNALK_SERIAL_DEVICES=<path> <path> ..."` line listing the
+ * enabled serial and onboardSerial devices. The installer template's
+ * ExecStartPre passes the ones present at each start to podman, so a device
+ * missing at start no longer stops the server (signalk-universal-installer
+ * #309). A path with characters the unit file would mangle is named in a
+ * comment instead. Empty when nothing is enabled.
+ */
+export function renderSerialDevicesBlock(hw: HardwareJson): string {
+  const lines: string[] = [];
+  const listed: string[] = [];
+  for (const path of serialDevicePaths(hw)) {
+    if (SAFE_DEVICE_PATH.test(path)) {
+      listed.push(path);
+    } else {
+      lines.push(`# serial device not passed (unsupported characters): ${path}`);
+    }
+  }
+  if (listed.length > 0) {
+    lines.push(`Environment="SIGNALK_SERIAL_DEVICES=${listed.join(' ')}"`);
+  }
+  return lines.join('\n');
+}
+
+/** Lines between the given BEGIN/END markers, or null when the markers are absent. */
+function blockLines(body: string, name: string): string[] | null {
+  const lines = body.split('\n');
+  const begin = lines.findIndex((l) => l.startsWith(`# === BEGIN ${name}`));
+  if (begin < 0) return null;
+  const end = lines.findIndex((l, i) => i > begin && l.startsWith(`# === END ${name}`));
+  if (end < 0) return null;
+  return lines.slice(begin + 1, end);
+}
+
+/** Whether the Quadlet has the [Service] SERIAL DEVICES block. */
+export function hasSerialDevicesBlock(body: string): boolean {
+  return blockLines(body, 'SERIAL DEVICES') !== null;
+}
+
+/**
+ * Non-empty lines of the live HARDWARE block that renderHardwareBlock does
+ * not render, in their order, for `RenderOptions.carried`.
+ */
+export function carriedHardwareLines(body: string): string[] {
+  return (blockLines(body, 'HARDWARE') ?? []).filter(
+    (l) => l.trim() !== '' && !RENDERED_HERE.test(l),
+  );
+}
+
+/**
+ * Replace the content of the SERIAL DEVICES block. A Quadlet without the
+ * block is returned unchanged; renderHardwareBlock covers it instead.
+ */
+export function spliceSerialDevicesBlock(body: string, block: string): string {
+  if (!hasSerialDevicesBlock(body)) return body;
+  const out: string[] = [];
+  let inBlock = false;
+  for (const line of body.split('\n')) {
+    if (line.startsWith('# === BEGIN SERIAL DEVICES')) {
+      out.push(line, block);
+      inBlock = true;
+      continue;
+    }
+    if (line.startsWith('# === END SERIAL DEVICES')) {
+      inBlock = false;
+      out.push(line);
+      continue;
+    }
+    if (!inBlock) out.push(line);
+  }
+  return out.join('\n');
 }
 
 /**
