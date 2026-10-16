@@ -95,7 +95,13 @@ const EMPTY_HARDWARE: HardwareJson = {
 export async function readHardware(): Promise<HardwareJson> {
   try {
     const body = await readFile(HARDWARE_PATH, 'utf8');
-    const parsed = JSON.parse(body.toString()) as Partial<HardwareJson>;
+    const raw: unknown = JSON.parse(body.toString());
+    // Spread below, an array or a string would add its index keys ("0",
+    // "1", ...) to the result, and an apply would write them back.
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+      return { ...EMPTY_HARDWARE };
+    }
+    const parsed = raw as Partial<HardwareJson>;
     return {
       ...parsed,
       serial: parsed.serial ?? [],

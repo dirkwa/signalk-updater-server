@@ -316,4 +316,28 @@ describe('readHardware', () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  it('returns the defaults for a file that is not a JSON object', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'updater-hardware-'));
+    const path = join(dir, 'hardware.json');
+    const previous = process.env.HARDWARE_PATH;
+    process.env.HARDWARE_PATH = path;
+    try {
+      vi.resetModules();
+      const { readHardware } = await import('../src/hardware.js');
+      for (const body of ['[1]', '"ab"', 'null']) {
+        await writeFile(path, body, 'utf8');
+        expect(await readHardware()).toEqual({
+          serial: [],
+          can: [],
+          bluetooth: { dbusAvailable: false, enabled: false },
+          gpio: { platform: 'none', enabled: false },
+        });
+      }
+    } finally {
+      if (previous === undefined) delete process.env.HARDWARE_PATH;
+      else process.env.HARDWARE_PATH = previous;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });
