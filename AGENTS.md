@@ -153,6 +153,7 @@ Pre-release tags (`vX.Y.Z-beta.N`, `vX.Y.Z-rc.N`) are still pushed by hand; only
 | `.coderabbit.yaml`                    | CodeRabbit review config — encodes the invariants above so PR reviews don't re-litigate them.                                                                                                                                                                                                                               |
 | `.github/workflows/ci.yml`            | PR lint + build + test.                                                                                                                                                                                                                                                                                                     |
 | `.github/workflows/publish-image.yml` | Tag-triggered multi-arch buildx → GHCR (amd64 on x86, arm64 native on `ubuntu-24.04-arm`, no QEMU).                                                                                                                                                                                                                         |
+| `.github/workflows/security-scan.yml` | Weekly Trivy scan of the published `:latest` image, results in Code scanning.                                                                                                                                                                                                                                               |
 
 ## Container mounts (final shape)
 
