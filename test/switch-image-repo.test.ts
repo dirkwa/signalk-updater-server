@@ -75,7 +75,8 @@ const mockPrune = vi.fn();
 vi.mock('../src/image-retention.js', () => ({
   pruneOldImagesFor: (repo: string, name: string, opts: unknown) => mockPrune(repo, name, opts),
 }));
-vi.mock('../src/update-checker.js', () => ({ invalidate: vi.fn() }));
+const mockInvalidateUpdates = vi.fn();
+vi.mock('../src/update-checker.js', () => ({ invalidate: () => mockInvalidateUpdates() }));
 const mockRecordImageSource = vi.fn();
 const mockRecordImageSourceForRef = vi.fn();
 vi.mock('../src/image-source.js', () => ({
@@ -110,6 +111,7 @@ beforeEach(() => {
     mockInspectImage,
     mockRecordImageSource,
     mockRecordImageSourceForRef,
+    mockInvalidateUpdates,
   ]) {
     m.mockReset();
   }
@@ -273,5 +275,31 @@ describe('performSwitch — image repo setting', () => {
     expect(result.error).toMatch(/not in local store/);
     expect(mockRewriteQuadletImage).not.toHaveBeenCalled();
     expect(mockPullImage).not.toHaveBeenCalled();
+  });
+});
+
+describe('performSwitch — update-check cache', () => {
+  // /api/updates/available caches an imageState computed against the image
+  // the switch replaces; without a refresh it keeps reporting
+  // 'pull-available' for a container that now runs the newest image.
+  it('clears it after a successful switch', async () => {
+    mockRewriteQuadletImage.mockResolvedValue({
+      previousImage: `${FORK}:dirkwa-old`,
+      snapshotPath: '/s',
+    });
+
+    const result = await performSwitch({ tag: 'dirkwa-new' });
+
+    expect(result.ok).toBe(true);
+    expect(mockInvalidateUpdates).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves it alone when the switch fails before the image changes', async () => {
+    mockPullImage.mockResolvedValue({ ok: false, error: 'registry unreachable' });
+
+    const result = await performSwitch({ tag: 'dirkwa-new' });
+
+    expect(result.ok).toBe(false);
+    expect(mockInvalidateUpdates).not.toHaveBeenCalled();
   });
 });

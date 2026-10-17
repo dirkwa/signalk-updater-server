@@ -18,6 +18,7 @@ import {
 } from './container-ops.js';
 import { publishSwitchEvent } from './switch-progress-broker.js';
 import { refreshDoctorDrift } from './drift-client.js';
+import { invalidate as invalidateUpdatesCache } from './update-checker.js';
 import { pruneOldImagesFor } from './image-retention.js';
 import { resolveSignalkHealthUrl } from './signalk-url-resolver.js';
 import { recordOutcome } from './last-outcome.js';
@@ -493,6 +494,13 @@ async function doSwitch(input: SwitchInput): Promise<SwitchResult> {
   //    on a promise that swallows its own errors — never block the
   //    switch's completion path on a doctor-side hiccup.
   void refreshDoctorDrift();
+
+  // 8b. Bust the update-checker cache: its imageState was computed against
+  //     the image this switch just replaced, so until the next daily check
+  //     /api/updates/available would keep reporting 'pull-available' for a
+  //     container that now runs the newest image. Fire-and-forget; the
+  //     refresh happens in the background.
+  invalidateUpdatesCache();
 
   // 9. Reclaim superseded signalk-server images. The just-switched image, the
   //    rolling tags, and the immediately-previous semver are protected; older
