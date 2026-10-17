@@ -53,6 +53,11 @@ let cache: AvailableUpdates = {
   lastCheckedAt: null,
 };
 
+// Bumped by invalidate(). A check that began before the bump measured state
+// the invalidation declared stale, and it can finish after the check
+// invalidate() starts, so it must not overwrite the cache.
+let cacheGeneration = 0;
+
 let timer: ReturnType<typeof setInterval> | null = null;
 
 // Latest tag relevant to the channel the container is RUNNING (not always
@@ -181,6 +186,7 @@ interface MinimalLogger {
 }
 
 export async function triggerCheck(log?: MinimalLogger): Promise<AvailableUpdates> {
+  const generation = cacheGeneration;
   // Bust the listTags cache for both peer images before re-querying.
   // Every triggerCheck path (boot tick, 24h scheduled tick, manual
   // "Check now", post-self-update invalidate) is by definition asking
@@ -205,6 +211,10 @@ export async function triggerCheck(log?: MinimalLogger): Promise<AvailableUpdate
     checkOne(DOCTOR_IMAGE, doctorT),
     fetchDriftReport(),
   ]);
+  if (generation !== cacheGeneration) {
+    // invalidate() ran meanwhile; the check it started owns the cache.
+    return cache;
+  }
   cache = {
     signalkServer,
     updater,
@@ -260,6 +270,7 @@ export function getCachedUpdates(): AvailableUpdates {
  * first action is its own boot-time refresh in startUpdateChecker.
  */
 export function invalidate(log?: MinimalLogger): void {
+  cacheGeneration++;
   cache = {
     signalkServer: { currentTag: 'unknown', updateAvailable: false },
     updater: { currentTag: 'unknown', updateAvailable: false },
