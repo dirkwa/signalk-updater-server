@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { Dashboard } from './Dashboard';
 import { ToastProvider } from '../toast';
 import { ConfirmProvider } from '../confirm';
@@ -239,7 +239,20 @@ describe('Dashboard', () => {
 
   it('hides the power controls when the host is not set up for them', async () => {
     renderDashboard();
-    await screen.findByText('Doctor');
+    // The controls start hidden, so absence only counts once the
+    // availability answer has been read and rendered.
+    const fetchMock = vi.mocked(globalThis.fetch);
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(([input]) => String(input).endsWith('/api/host/power')),
+      ).toBe(true);
+    });
+    const i = fetchMock.mock.calls.findIndex(([input]) =>
+      String(input).endsWith('/api/host/power'),
+    );
+    await act(async () => {
+      await fetchMock.mock.results[i]?.value;
+    });
     expect(screen.queryByRole('button', { name: /power off/i })).not.toBeInTheDocument();
   });
 

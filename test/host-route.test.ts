@@ -109,6 +109,14 @@ describe('POST /api/host/{poweroff,reboot}', () => {
     expect(res.statusCode).toBe(502);
   });
 
+  it('starts nothing when the unit state cannot be read', async () => {
+    mockGetActiveState.mockResolvedValue('unknown');
+    const res = await app.inject({ method: 'POST', url: '/api/host/reboot' });
+    expect(res.statusCode).toBe(502);
+    expect(res.json().error).toContain('state: unknown');
+    expect(mockStartUnit).not.toHaveBeenCalled();
+  });
+
   it('answers 502 with the journal hint when the host refuses', async () => {
     mockGetActiveState.mockResolvedValue('failed');
     const res = await app.inject({ method: 'POST', url: '/api/host/poweroff' });

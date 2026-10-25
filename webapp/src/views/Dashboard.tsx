@@ -473,6 +473,18 @@ export function Dashboard() {
           30000,
         );
       } catch (err) {
+        // No HTTP status means the answer never arrived: the unit was started
+        // before the response, so the host may already be going down.
+        if ((err as ApiError).status === undefined) {
+          toast.show(
+            `${verb}: no answer. The computer may already be ${
+              action === 'poweroff' ? 'shutting down' : 'rebooting'
+            }.`,
+            'err',
+            30000,
+          );
+          return;
+        }
         toast.show(`${verb} failed: ${err instanceof Error ? err.message : String(err)}`, 'err');
       }
     },

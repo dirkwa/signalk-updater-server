@@ -35,7 +35,11 @@ export async function hostPowerAvailable(): Promise<boolean> {
 // tests.
 export async function runPowerUnit(unit: string, windowMs = 30_000, pollMs = 250): Promise<string> {
   await safe(() => resetFailedUnit(unit));
-  if ((await getActiveState(unit)) === 'active') await stopUnitAndWait(unit);
+  // Starting a unit an unread state may have left `active` runs nothing and
+  // would read back as success, so a failed read ends the request here.
+  const initial = await getActiveState(unit);
+  if (initial === 'unknown') return initial;
+  if (initial === 'active') await stopUnitAndWait(unit);
   await startUnit(unit);
   const deadline = Date.now() + windowMs;
   for (;;) {
