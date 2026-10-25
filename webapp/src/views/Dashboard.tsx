@@ -25,6 +25,8 @@ import type {
   DoctorState,
   DriftPackage,
   HealthResponse,
+  HostPowerAction,
+  HostPowerState,
   ImageState,
   LockStatus,
   SelfState,
@@ -294,6 +296,11 @@ export function Dashboard() {
   const lock = useApi<LockStatus>((signal) => api('/api/lock', { signal }), {
     intervalMs: 10000,
   });
+  // Whether the installer set up power off / reboot on this host. Changes
+  // only on an installer run, so a slow poll is enough.
+  const hostPower = useApi<HostPowerState>((signal) => api('/api/host/power', { signal }), {
+    intervalMs: 5 * 60 * 1000,
+  });
 
   // True from the moment THIS tab starts a doctor update until the SSE
   // stream delivers the terminal event. The POST itself answers 202
@@ -441,6 +448,47 @@ export function Dashboard() {
       }
     },
     [confirm, state, toast],
+  );
+
+  const power = useCallback(
+    async (action: HostPowerAction): Promise<void> => {
+      const verb = action === 'poweroff' ? 'Power off' : 'Reboot';
+      const r = await confirm.ask({
+        title: `${verb} this computer?`,
+        body:
+          action === 'poweroff'
+            ? 'Signal K, the consoles and every container stop, then the computer turns off. It stays off until its power is switched off and on again, or its power button is pressed.'
+            : 'Signal K, the consoles and every container stop, and the computer starts again. Plotters, AIS feeds and instruments are disconnected for a few minutes.',
+        okLabel: verb,
+        okColor: action === 'poweroff' ? 'danger' : 'primary',
+      });
+      if (!r.confirmed) return;
+      try {
+        await api(`/api/host/${action}`, { method: 'POST' });
+        toast.show(
+          action === 'poweroff'
+            ? 'Powering off. This page stops answering in a moment.'
+            : 'Rebooting. Reload this page in a few minutes.',
+          'ok',
+          30000,
+        );
+      } catch (err) {
+        // No HTTP status means the answer never arrived: the unit was started
+        // before the response, so the host may already be going down.
+        if ((err as ApiError).status === undefined) {
+          toast.show(
+            `${verb}: no answer. The computer may already be ${
+              action === 'poweroff' ? 'shutting down' : 'rebooting'
+            }.`,
+            'err',
+            30000,
+          );
+          return;
+        }
+        toast.show(`${verb} failed: ${err instanceof Error ? err.message : String(err)}`, 'err');
+      }
+    },
+    [confirm, toast],
   );
 
   const selfUpdate = useCallback(async (): Promise<void> => {
@@ -772,6 +820,27 @@ export function Dashboard() {
           </Card>
         </Col>
       </Row>
+
+      {hostPower.data?.available ? (
+        <Card className="mb-3">
+          <CardHeader>
+            <strong>Computer</strong>
+          </CardHeader>
+          <CardBody className="d-flex flex-wrap align-items-center gap-2">
+            <span className="text-muted small me-auto">
+              Shut the computer down before leaving the boat, or restart it.
+            </span>
+            <ButtonGroup size="sm">
+              <Button color="primary" outline onClick={() => void power('reboot')}>
+                Reboot
+              </Button>
+              <Button color="danger" outline onClick={() => void power('poweroff')}>
+                Power off
+              </Button>
+            </ButtonGroup>
+          </CardBody>
+        </Card>
+      ) : null}
 
       <p className="text-muted small mt-2">
         Last state poll:{' '}

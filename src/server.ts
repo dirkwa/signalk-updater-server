@@ -16,6 +16,7 @@ import { registerUpdaterStatusRoutes } from './routes/updater-status.js';
 import { registerLogStreamRoutes } from './routes/logs-stream.js';
 import { registerHardwareRoutes } from './routes/hardware.js';
 import { registerLockRoutes } from './routes/lock.js';
+import { registerHostRoutes } from './routes/host.js';
 import { releaseStaleLockAtBoot } from './mutex.js';
 import { startUpdateChecker } from './update-checker.js';
 
@@ -62,6 +63,7 @@ export async function createServer(): Promise<FastifyInstance> {
   await registerLogStreamRoutes(app);
   await registerHardwareRoutes(app);
   await registerLockRoutes(app);
+  await registerHostRoutes(app);
 
   // Boot the daily GHCR check. Runs once immediately so the
   // /api/updates/available cache is warm by the time the dashboard

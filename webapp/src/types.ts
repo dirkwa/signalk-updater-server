@@ -77,7 +77,8 @@ export interface LockInfo {
     | 'doctor-switch'
     | 'hardware-apply'
     | 'recover'
-    | 'pause';
+    | 'pause'
+    | 'host-power';
   startedAt: string;
   pid?: number;
 }
@@ -289,4 +290,22 @@ export interface SwitchResult {
   rolledBack?: boolean;
   error?: string;
   logsRef?: string;
+}
+
+/** Mirror of src/types.ts HostPowerAction / HostPowerState /
+ *  HostPowerResult. The host power actions. Each starts a oneshot user unit the installer
+ *  writes (`signalk-poweroff.service`, `signalk-reboot.service`), whose
+ *  `systemctl poweroff|reboot` a polkit rule allows for the stack's user. */
+export type HostPowerAction = 'poweroff' | 'reboot';
+
+/** GET /api/host/power: `available` is true when both power units are
+ *  loaded, i.e. the installer set them up on this host. */
+export interface HostPowerState {
+  available: boolean;
+}
+
+/** POST /api/host/{poweroff,reboot} payload. */
+export interface HostPowerResult {
+  ok: boolean;
+  error?: string;
 }

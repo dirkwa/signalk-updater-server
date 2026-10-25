@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { Dashboard } from './Dashboard';
 import { ToastProvider } from '../toast';
 import { ConfirmProvider } from '../confirm';
@@ -109,6 +109,7 @@ describe('Dashboard', () => {
       '/api/doctor/state': sampleDoctor,
       '/api/updates/available': sampleUpdates,
       '/api/lock': noLock,
+      '/api/host/power': { available: false },
     });
   });
 
@@ -234,5 +235,50 @@ describe('Dashboard', () => {
     renderDashboard();
     await screen.findByText('Doctor');
     expect(screen.queryByRole('button', { name: /clear lock/i })).not.toBeInTheDocument();
+  });
+
+  it('hides the power controls when the host is not set up for them', async () => {
+    renderDashboard();
+    // The controls start hidden, so absence only counts once the
+    // availability answer has been read and rendered.
+    const fetchMock = vi.mocked(globalThis.fetch);
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(([input]) => String(input).endsWith('/api/host/power')),
+      ).toBe(true);
+    });
+    const i = fetchMock.mock.calls.findIndex(([input]) =>
+      String(input).endsWith('/api/host/power'),
+    );
+    await act(async () => {
+      await fetchMock.mock.results[i]?.value;
+    });
+    expect(screen.queryByRole('button', { name: /power off/i })).not.toBeInTheDocument();
+  });
+
+  it('powers the host off after confirmation', async () => {
+    mockFetch({
+      '/api/state': sampleState,
+      '/api/health': sampleHealth,
+      '/api/self/state': sampleSelf,
+      '/api/doctor/state': sampleDoctor,
+      '/api/updates/available': sampleUpdates,
+      '/api/lock': noLock,
+      '/api/host/power': { available: true },
+      '/api/host/poweroff': { ok: true },
+    });
+    renderDashboard();
+    fireEvent.click(await screen.findByRole('button', { name: /power off/i }));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: /power off/i }));
+    await waitFor(() => {
+      const calls = vi.mocked(globalThis.fetch).mock.calls;
+      expect(
+        calls.some(
+          ([input, init]) =>
+            String(input).endsWith('/api/host/poweroff') && init?.method === 'POST',
+        ),
+      ).toBe(true);
+    });
   });
 });
