@@ -132,6 +132,30 @@ export async function getActiveState(unit: string): Promise<string> {
 }
 
 /**
+ * Read `org.freedesktop.systemd1.Unit.LoadState` for the named unit:
+ * `loaded` when its unit file was found and parsed, `not-found` when there is
+ * none. `LoadUnit` first, so a unit systemd has not loaded into memory (a
+ * oneshot never started since the last daemon-reload) is resolved from disk.
+ * Returns `unknown` if either call fails.
+ */
+export async function getLoadState(unit: string): Promise<string> {
+  const loaded = await runBusctl(['call', SYSD.bus, SYSD.obj, SYSD.iface, 'LoadUnit', 's', unit]);
+  // Output shape: `o "/org/freedesktop/systemd1/unit/..."\n`
+  const path = loaded.ok ? /"([^"]+)"/.exec(loaded.stdout)?.[1] : undefined;
+  if (!path) return 'unknown';
+  const r = await runBusctl([
+    'get-property',
+    SYSD.bus,
+    path,
+    'org.freedesktop.systemd1.Unit',
+    'LoadState',
+  ]);
+  if (!r.ok) return 'unknown';
+  const m = /"([^"]+)"/.exec(r.stdout);
+  return m?.[1] ?? 'unknown';
+}
+
+/**
  * systemd encodes unit names in object paths by replacing every non-[A-Za-z0-9]
  * character with `_<hex>` (e.g. `signalk-server.service` →
  * `signalk_2dserver_2eservice`). Mirrors `bus_path_escape` in systemd.
