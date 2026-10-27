@@ -267,6 +267,14 @@ describe('GPIO nodes passed at start (installer Pi 5 GPIO change)', () => {
     expect(passesGpioAtStart(crlf)).toBe(true);
   });
 
+  it('does not continue a command over a line ending in an escaped backslash', () => {
+    const escaped = spliceSerialDevicesBlock(
+      INSTALLER_QUADLET.replace('[Service]', '[Service]\nExecStartPre=/bin/echo \\\\'),
+      'Environment="SIGNALK_GPIO=1"',
+    );
+    expect(passesGpioAtStart(escaped)).toBe(false);
+  });
+
   it('does not take another directive naming the flag for the start script', () => {
     const other = INSTALLER_QUADLET.replace(
       '[Service]',
