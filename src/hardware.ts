@@ -305,13 +305,19 @@ export function passesGpioAtStart(body: string): boolean {
   // apply writes or any other directive naming it passes no device. The
   // command continues over lines ending in an unescaped backslash, and
   // systemd skips comment lines inside it.
-  const directives = body
-    .replace(/\r\n/g, '\n')
-    .split('\n')
-    .filter((l) => !/^\s*[#;]/.test(l))
-    .join('\n')
-    .replace(/(^|[^\\])((?:\\\\)*)\\\n/g, '$1$2 ')
-    .split('\n');
+  const directives: string[] = [];
+  let pending: string | null = null;
+  for (const line of body.replace(/\r\n/g, '\n').split('\n')) {
+    if (/^\s*[#;]/.test(line)) continue;
+    const continues = (/\\*$/.exec(line)?.[0].length ?? 0) % 2 === 1;
+    const text = continues ? line.slice(0, -1) + ' ' : line;
+    pending = pending === null ? text : pending + text;
+    if (!continues) {
+      directives.push(pending);
+      pending = null;
+    }
+  }
+  if (pending !== null) directives.push(pending);
   return (
     hasSerialDevicesBlock(body) &&
     directives.some((d) => d.startsWith('ExecStartPre=') && d.includes('SIGNALK_GPIO'))

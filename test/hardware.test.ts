@@ -275,6 +275,12 @@ describe('GPIO nodes passed at start (installer Pi 5 GPIO change)', () => {
     expect(passesGpioAtStart(escaped)).toBe(false);
   });
 
+  it('reads the start script across consecutive continuation lines', () => {
+    const blank = GPIO_QUADLET.replace('    if [', '\\\n    if [');
+    expect(blank).not.toBe(GPIO_QUADLET);
+    expect(passesGpioAtStart(blank)).toBe(true);
+  });
+
   it('does not take another directive naming the flag for the start script', () => {
     const other = INSTALLER_QUADLET.replace(
       '[Service]',
