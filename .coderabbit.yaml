@@ -18,6 +18,12 @@ reviews:
       - 'dependabot[bot]'
       - 'github-actions[bot]'
 
+  # The codebase documents with "why" comments where the code needs them,
+  # not a docstring on every function.
+  pre_merge_checks:
+    docstrings:
+      mode: 'off'
+
   path_filters:
     - '!**/package-lock.json'
     - '!**/yarn.lock'
