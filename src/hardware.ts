@@ -301,18 +301,13 @@ function blockLines(body: string, name: string): string[] | null {
  * would fail the start whenever its node is missing.
  */
 export function passesGpioAtStart(body: string): boolean {
-  // A line of the ExecStartPre, not a comment or the Environment= flag that
-  // an apply writes into the SERIAL DEVICES block.
+  // Only an ExecStartPre= reads the flag; a comment, the Environment= line an
+  // apply writes or any other directive naming it passes no device. The
+  // command continues over lines ending in a backslash.
+  const directives = body.replace(/\\\n/g, ' ').split('\n');
   return (
     hasSerialDevicesBlock(body) &&
-    body
-      .split('\n')
-      .some(
-        (l) =>
-          !l.trimStart().startsWith('#') &&
-          !l.startsWith('Environment=') &&
-          l.includes('SIGNALK_GPIO'),
-      )
+    directives.some((d) => d.startsWith('ExecStartPre=') && d.includes('SIGNALK_GPIO'))
   );
 }
 

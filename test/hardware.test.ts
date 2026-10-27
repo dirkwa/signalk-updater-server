@@ -259,6 +259,14 @@ describe('GPIO nodes passed at start (installer Pi 5 GPIO change)', () => {
     expect(passesGpioAtStart(flagged)).toBe(false);
   });
 
+  it('does not take another directive naming the flag for the start script', () => {
+    const other = INSTALLER_QUADLET.replace(
+      '[Service]',
+      '[Service]\nEnvironmentFile=-%t/SIGNALK_GPIO.env',
+    );
+    expect(passesGpioAtStart(other)).toBe(false);
+  });
+
   it('renders SIGNALK_GPIO=1 after the serial list and no gpiomem volume', () => {
     expect(renderHardwareBlock(HW, { serialInService: true, gpioInService: true })).not.toContain(
       'gpiomem',
