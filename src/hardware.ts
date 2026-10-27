@@ -303,8 +303,15 @@ function blockLines(body: string, name: string): string[] | null {
 export function passesGpioAtStart(body: string): boolean {
   // Only an ExecStartPre= reads the flag; a comment, the Environment= line an
   // apply writes or any other directive naming it passes no device. The
-  // command continues over lines ending in a backslash.
-  const directives = body.replace(/\\\n/g, ' ').split('\n');
+  // command continues over lines ending in a backslash, and systemd skips
+  // comment lines inside it.
+  const directives = body
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .filter((l) => !/^\s*[#;]/.test(l))
+    .join('\n')
+    .replace(/\\\n/g, ' ')
+    .split('\n');
   return (
     hasSerialDevicesBlock(body) &&
     directives.some((d) => d.startsWith('ExecStartPre=') && d.includes('SIGNALK_GPIO'))
