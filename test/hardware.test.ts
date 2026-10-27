@@ -6,6 +6,7 @@ import {
   applyToHardware,
   carriedHardwareLines,
   hasSerialDevicesBlock,
+  passesGpioAtStart,
   renderHardwareBlock,
   renderSerialDevicesBlock,
   spliceHardwareBlock,
@@ -111,7 +112,7 @@ describe('renderHardwareBlock and the SERIAL DEVICES block (installer#309)', () 
   });
 
   it('appends carried lines after the lines it renders', () => {
-    const hw = { ...HW, gpio: { platform: 'rpi5', enabled: true } };
+    const hw = { ...HW, gpio: { platform: 'rpi4', enabled: true } };
     const block = renderHardwareBlock(hw, {
       serialInService: true,
       carried: ['Volume=/dev/snd:/dev/snd:ro'],
@@ -228,6 +229,106 @@ describe('Quadlet blocks from the installer template', () => {
 
   it('leaves a Quadlet without the SERIAL DEVICES block unchanged', () => {
     expect(spliceSerialDevicesBlock(SAMPLE_QUADLET, 'Environment="X=1"')).toBe(SAMPLE_QUADLET);
+  });
+});
+
+describe('GPIO nodes passed at start (installer Pi 5 GPIO change)', () => {
+  const GPIO_QUADLET = INSTALLER_QUADLET.replace(
+    'EnvironmentFile=-%t/signalk-server-devices.env',
+    [
+      'EnvironmentFile=-%t/signalk-server-devices.env',
+      "ExecStartPre=/bin/sh -c 'args=; \\",
+      '    if [ "$${SIGNALK_GPIO:-}" = 1 ]; then \\',
+      '        for d in /dev/gpiomem /dev/gpiomem[0-9]* /dev/gpiochip[0-9]*; do [ -e "$$d" ] || continue; args="$$args --device $$d"; done; \\',
+      "    fi; exit 0'",
+    ].join('\n'),
+  );
+  const HW: HardwareJson = { ...SAMPLE_HW, gpio: { platform: 'rpi5', enabled: true } };
+
+  it('tells a template that passes GPIO at start from one that does not', () => {
+    expect(passesGpioAtStart(GPIO_QUADLET)).toBe(true);
+    expect(passesGpioAtStart(INSTALLER_QUADLET)).toBe(false);
+    expect(passesGpioAtStart(SAMPLE_QUADLET)).toBe(false);
+  });
+
+  it('does not take a comment or an applied flag for the start script', () => {
+    const flagged = spliceSerialDevicesBlock(
+      INSTALLER_QUADLET.replace('[Service]', '[Service]\n# With SIGNALK_GPIO=1 it also passes ...'),
+      'Environment="SIGNALK_GPIO=1"',
+    );
+    expect(passesGpioAtStart(flagged)).toBe(false);
+  });
+
+  it('reads the start script across CRLF line ends and comment lines', () => {
+    const crlf = GPIO_QUADLET.replace(
+      '    if [ "$${SIGNALK_GPIO',
+      '# passes the GPIO nodes\n    if [ "$${SIGNALK_GPIO',
+    ).replace(/\n/g, '\r\n');
+    expect(passesGpioAtStart(crlf)).toBe(true);
+  });
+
+  it('does not continue a command over a line ending in an escaped backslash', () => {
+    const escaped = spliceSerialDevicesBlock(
+      INSTALLER_QUADLET.replace('[Service]', '[Service]\nExecStartPre=/bin/echo \\\\'),
+      'Environment="SIGNALK_GPIO=1"',
+    );
+    expect(passesGpioAtStart(escaped)).toBe(false);
+  });
+
+  it('reads the start script across consecutive continuation lines', () => {
+    const blank = GPIO_QUADLET.replace('    if [', '\\\n    if [');
+    expect(blank).not.toBe(GPIO_QUADLET);
+    expect(passesGpioAtStart(blank)).toBe(true);
+  });
+
+  it('does not take another directive naming the flag for the start script', () => {
+    const other = INSTALLER_QUADLET.replace(
+      '[Service]',
+      '[Service]\nEnvironmentFile=-%t/SIGNALK_GPIO.env',
+    );
+    expect(passesGpioAtStart(other)).toBe(false);
+  });
+
+  it('renders SIGNALK_GPIO=1 after the serial list and no gpiomem volume', () => {
+    expect(renderHardwareBlock(HW, { serialInService: true, gpioInService: true })).not.toContain(
+      'gpiomem',
+    );
+    expect(renderSerialDevicesBlock(HW, { gpioInService: true }).split('\n')).toEqual([
+      'Environment="SIGNALK_SERIAL_DEVICES=/dev/serial/by-id/usb-FTDI_AB_002"',
+      'Environment="SIGNALK_GPIO=1"',
+    ]);
+  });
+
+  it('keeps the gpiomem volume for a template that predates SIGNALK_GPIO', () => {
+    const pi4 = { ...HW, gpio: { platform: 'rpi4', enabled: true } };
+    expect(renderHardwareBlock(pi4, { serialInService: true }).split('\n')).toContain(
+      'Volume=/dev/gpiomem:/dev/gpiomem',
+    );
+    expect(renderSerialDevicesBlock(HW)).not.toContain('SIGNALK_GPIO');
+  });
+
+  it('writes no gpiomem volume on a Pi 5, which has no /dev/gpiomem', () => {
+    expect(renderHardwareBlock(HW, { serialInService: true })).not.toContain('gpiomem');
+  });
+
+  it('enables GPIO only for the boolean true, like the installer', () => {
+    const odd = { ...HW, gpio: { platform: 'rpi4', enabled: 'true' as unknown as boolean } };
+    expect(renderSerialDevicesBlock(odd, { gpioInService: true })).not.toContain('SIGNALK_GPIO');
+    expect(renderHardwareBlock(odd)).not.toContain('gpiomem');
+  });
+
+  it('renders no GPIO line while GPIO is off', () => {
+    expect(renderSerialDevicesBlock(SAMPLE_HW, { gpioInService: true })).not.toContain(
+      'SIGNALK_GPIO',
+    );
+  });
+
+  it('drops a gpiomem volume an earlier apply wrote instead of carrying it', () => {
+    const old = GPIO_QUADLET.replace(
+      'Volume=/dev/snd:/dev/snd:ro',
+      'Volume=/dev/gpiomem:/dev/gpiomem\nVolume=/dev/snd:/dev/snd:ro',
+    );
+    expect(carriedHardwareLines(old).join('\n')).not.toContain('gpiomem');
   });
 });
 

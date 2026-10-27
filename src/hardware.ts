@@ -158,7 +158,8 @@ export async function writeHardware(next: HardwareJson): Promise<void> {
 // the same lines.
 const SAFE_DEVICE_PATH = /^\/[A-Za-z0-9._/:+@,=-]+$/;
 
-// Lines of the HARDWARE block this file renders from hardware.json. Every
+// Lines of the HARDWARE block this file renders from hardware.json, or
+// rendered in an earlier version (Volume=/dev/gpiomem). Every
 // other line in the block (the /dev/snd, /dev/input, avahi and halpid
 // Volume= lines and their comments) comes from host-side probes the
 // installer's renderer runs and this container cannot repeat, so an apply
@@ -186,6 +187,12 @@ export interface RenderOptions {
   serialInService?: boolean;
   /** Lines of the live HARDWARE block not rendered here; see carriedHardwareLines. */
   carried?: string[];
+  /**
+   * True when the Quadlet's device ExecStartPre passes the GPIO nodes itself
+   * (see passesGpioAtStart): enabled GPIO then goes into the SERIAL DEVICES
+   * block as SIGNALK_GPIO=1 and gets no Volume= line here.
+   */
+  gpioInService?: boolean;
 }
 
 /**
@@ -228,7 +235,11 @@ export function renderHardwareBlock(hw: HardwareJson, opts: RenderOptions = {}):
     // would silently regress a working `signalk bluetooth enable`.
     lines.push('Volume=signalk-dbus-socket:/run/dbus:rw');
   }
-  if (hw.gpio.enabled) {
+  if (hw.gpio.enabled === true && !opts.gpioInService && hw.gpio.platform !== 'rpi5') {
+    // A Quadlet whose ExecStartPre predates SIGNALK_GPIO. A Pi 5 gets no line:
+    // it has /dev/gpiomem0..4 and no /dev/gpiomem, so this Volume= would fail
+    // every start. `signalk render-server` brings the template that passes
+    // the GPIO nodes at start.
     lines.push('Volume=/dev/gpiomem:/dev/gpiomem');
   }
   lines.push(...(opts.carried ?? []));
@@ -242,9 +253,15 @@ export function renderHardwareBlock(hw: HardwareJson, opts: RenderOptions = {}):
  * ExecStartPre passes the ones present at each start to podman, so a device
  * missing at start no longer stops the server (signalk-universal-installer
  * #309). A path with characters the unit file would mangle is named in a
- * comment instead. Empty when nothing is enabled.
+ * comment instead. With `gpioInService` and GPIO enabled it also holds
+ * `Environment="SIGNALK_GPIO=1"`, after the serial list, so a Pi with GPIO
+ * and no serial device still gets a non-empty block. Empty when nothing is
+ * enabled.
  */
-export function renderSerialDevicesBlock(hw: HardwareJson): string {
+export function renderSerialDevicesBlock(
+  hw: HardwareJson,
+  opts: Pick<RenderOptions, 'gpioInService'> = {},
+): string {
   const lines: string[] = [];
   const listed: string[] = [];
   for (const path of serialDevicePaths(hw)) {
@@ -257,6 +274,11 @@ export function renderSerialDevicesBlock(hw: HardwareJson): string {
   if (listed.length > 0) {
     lines.push(`Environment="SIGNALK_SERIAL_DEVICES=${listed.join(' ')}"`);
   }
+  // `=== true`, like the installer's jq test: a string "true" in a
+  // hand-edited hardware.json enables neither renderer.
+  if (hw.gpio.enabled === true && opts.gpioInService) {
+    lines.push('Environment="SIGNALK_GPIO=1"');
+  }
   return lines.join('\n');
 }
 
@@ -268,6 +290,38 @@ function blockLines(body: string, name: string): string[] | null {
   const end = lines.findIndex((l, i) => i > begin && l.startsWith(`# === END ${name}`));
   if (end < 0) return null;
   return lines.slice(begin + 1, end);
+}
+
+/**
+ * Whether the Quadlet's device ExecStartPre passes the GPIO nodes present at
+ * each start when SIGNALK_GPIO=1 (installer templates since
+ * signalk-universal-installer's Pi 5 GPIO change). The GPIO nodes differ
+ * between a Pi 4 (/dev/gpiomem) and a Pi 5 (/dev/gpiomem0..4), and a kernel
+ * update renumbered the Pi 5's /dev/gpiochip*, so a Volume= written here
+ * would fail the start whenever its node is missing.
+ */
+export function passesGpioAtStart(body: string): boolean {
+  // Only an ExecStartPre= reads the flag; a comment, the Environment= line an
+  // apply writes or any other directive naming it passes no device. The
+  // command continues over lines ending in an unescaped backslash, and
+  // systemd skips comment lines inside it.
+  const directives: string[] = [];
+  let pending: string | null = null;
+  for (const line of body.replace(/\r\n/g, '\n').split('\n')) {
+    if (/^\s*[#;]/.test(line)) continue;
+    const continues = (/\\*$/.exec(line)?.[0].length ?? 0) % 2 === 1;
+    const text = continues ? line.slice(0, -1) + ' ' : line;
+    pending = pending === null ? text : pending + text;
+    if (!continues) {
+      directives.push(pending);
+      pending = null;
+    }
+  }
+  if (pending !== null) directives.push(pending);
+  return (
+    hasSerialDevicesBlock(body) &&
+    directives.some((d) => d.startsWith('ExecStartPre=') && d.includes('SIGNALK_GPIO'))
+  );
 }
 
 /** Whether the Quadlet has the [Service] SERIAL DEVICES block. */

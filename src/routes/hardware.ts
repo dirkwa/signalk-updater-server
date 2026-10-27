@@ -6,6 +6,7 @@ import {
   applyToHardware,
   carriedHardwareLines,
   hasSerialDevicesBlock,
+  passesGpioAtStart,
   readHardware,
   renderHardwareBlock,
   renderSerialDevicesBlock,
@@ -67,13 +68,18 @@ export async function registerHardwareRoutes(app: FastifyInstance): Promise<void
           const original = (await readFile(quadletPath, 'utf8')).toString();
           await snapshotQuadlet(SERVER_QUADLET);
           const serialInService = hasSerialDevicesBlock(original);
+          const gpioInService = passesGpioAtStart(original);
           const block = renderHardwareBlock(next, {
             serialInService,
+            gpioInService,
             carried: carriedHardwareLines(original),
           });
           let rewritten = spliceHardwareBlock(original, block);
           if (serialInService) {
-            rewritten = spliceSerialDevicesBlock(rewritten, renderSerialDevicesBlock(next));
+            rewritten = spliceSerialDevicesBlock(
+              rewritten,
+              renderSerialDevicesBlock(next, { gpioInService }),
+            );
           }
           await writeAtomic(quadletPath, rewritten);
           await pruneSnapshots(SERVER_QUADLET);
